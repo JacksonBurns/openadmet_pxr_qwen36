@@ -1,31 +1,439 @@
+import os
+import shutil
+import warnings
+import numpy as np
 import pandas as pd
+import torch
+from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.metrics import mean_absolute_error
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from scipy.optimize import minimize
+from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
+from lightning import pytorch as pl
+from chemprop import data, models, nn
+from rdkit import Chem
+from rdkit.Chem import rdFingerprintGenerator
 
+warnings.filterwarnings("ignore")
+torch.set_num_threads(4)
+
+SEED = 42
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+
+
+# ============================================================================
+# DATA LOADING AND PREPROCESSING
+# ============================================================================
 
 def load_data():
-    train = pd.read_csv("train.csv")
+    train = pd.read_csv("train.csv", low_memory=False)
     test = pd.read_csv("test_phase1.csv")
-
     return train, test
 
-def preprocess_data(train, test):
-    # do some preprocessing here
-    return train, test
+
+def prepare_primary_data(train_df):
+    """Extract high-quality primary assay data, deduplicated by SMILES."""
+    primary = train_df[
+        train_df["primary_assay_pEC50"].notna()
+        & train_df["SMILES"].notna()
+        & (train_df["SMILES"] != "")
+    ].copy()
+
+    primary["pEC50"] = primary["primary_assay_pEC50"].astype(float)
+    primary["std_error"] = primary["primary_assay_pEC50_std.error (-log10(molarity))"].astype(float)
+    primary["Emax"] = primary["primary_assay_Emax_estimate (log2FC vs. baseline)"].astype(float)
+    primary["Emax_vs_pos"] = primary["primary_assay_Emax.vs.pos.ctrl_estimate (dimensionless)"].astype(float)
+
+    primary["std_error"] = primary["std_error"].replace(0, np.nan).fillna(0.1)
+
+    def weighted_agg(group):
+        weights = 1.0 / (group["std_error"] ** 2)
+        return pd.Series({
+            "pEC50": (group["pEC50"] * weights).sum() / weights.sum(),
+            "std_error": group["std_error"].min(),
+            "Emax": (group["Emax"] * weights).sum() / weights.sum(),
+            "Emax_vs_pos": (group["Emax_vs_pos"] * weights).sum() / weights.sum(),
+        })
+
+    primary_clean = primary.groupby("SMILES").apply(weighted_agg, include_groups=False).reset_index()
+
+    # Add counter-assay data for selectivity signal
+    counter = train_df[
+        train_df["counter_assay_pEC50"].notna()
+        & train_df["SMILES"].notna()
+        & (train_df["SMILES"] != "")
+    ].copy()
+
+    if len(counter) > 0:
+        counter["counter_pEC50"] = counter["counter_assay_pEC50"].astype(float)
+        counter_agg = counter.groupby("SMILES")["counter_pEC50"].mean().reset_index()
+        primary_clean = primary_clean.merge(counter_agg, on="SMILES", how="left")
+
+    primary_clean = primary_clean[
+        (primary_clean["pEC50"] >= 1.5) & (primary_clean["pEC50"] <= 8.0)
+    ].reset_index(drop=True)
+
+    return primary_clean
+
+
+# ============================================================================
+# MOLECULAR FINGERPRINTING (RDKit)
+# ============================================================================
+
+def compute_morgan_fps(smis, radius=2, n_bits=2048):
+    """Compute Morgan fingerprints using RDKit's modern API."""
+    gen = rdFingerprintGenerator.GetMorganGenerator(radius=radius, fpSize=n_bits)
+    fps = []
+    for s in smis:
+        mol = Chem.MolFromSmiles(s)
+        if mol is None:
+            fps.append(np.zeros(n_bits, dtype=np.float32))
+            continue
+        fp = gen.GetFingerprintAsNumPy(mol)
+        fps.append(fp.astype(np.float32))
+    return np.array(fps)
+
+
+# ============================================================================
+# CHEMPROP MPNN MODEL
+# ============================================================================
+
+def train_chemprop(smis, ys, val_smis, val_ys,
+                   d_h=512, depth=5, n_layers=2, hidden_dim=512,
+                   batch_size=64, max_epochs=80, checkpoint_dir="chemprop_mt",
+                   n_tasks=2):
+    """Train a chemprop MPNN for regression."""
+    if ys.ndim == 1:
+        ys = ys.reshape(-1, 1)
+    if val_ys.ndim == 1:
+        val_ys = val_ys.reshape(-1, 1)
+
+    train_data = [
+        data.MoleculeDatapoint.from_smi(s, y.tolist() if hasattr(y, 'tolist') else [y])
+        for s, y in zip(smis, ys)
+    ]
+    val_data = [
+        data.MoleculeDatapoint.from_smi(s, y.tolist() if hasattr(y, 'tolist') else [y])
+        for s, y in zip(val_smis, val_ys)
+    ]
+
+    train_dset = data.MoleculeDataset(train_data)
+    output_scaler = train_dset.normalize_targets()
+    val_dset = data.MoleculeDataset(val_data)
+    val_dset.normalize_targets(output_scaler)
+
+    train_loader = data.build_dataloader(train_dset, batch_size=batch_size)
+    val_loader = data.build_dataloader(val_dset, batch_size=batch_size, shuffle=False)
+
+    output_transform = nn.transforms.UnscaleTransform.from_standard_scaler(output_scaler)
+    ffn = nn.RegressionFFN(
+        n_tasks=n_tasks,
+        output_transform=output_transform,
+        input_dim=d_h,
+        hidden_dim=hidden_dim,
+        n_layers=n_layers,
+        dropout=0.1,
+    )
+    model = models.MPNN(
+        nn.BondMessagePassing(d_h=d_h, depth=depth),
+        nn.MeanAggregation(),
+        ffn,
+        batch_norm=True,
+        init_lr=1e-4,
+        max_lr=5e-4,
+        final_lr=1e-4,
+    )
+
+    checkpoint_cb = ModelCheckpoint(
+        dirpath=f"checkpoints/{checkpoint_dir}",
+        filename="best-{epoch:02d}-{val_loss:.4f}",
+        monitor="val_loss",
+        mode="min",
+        save_top_k=1,
+        save_last=True,
+    )
+    early_stop_cb = EarlyStopping(
+        monitor="val_loss",
+        patience=12,
+        mode="min",
+    )
+
+    trainer = pl.Trainer(
+        max_epochs=max_epochs,
+        accelerator="auto",
+        devices=1,
+        callbacks=[checkpoint_cb, early_stop_cb],
+        logger=False,
+        enable_progress_bar=False,
+        enable_model_summary=False,
+    )
+
+    trainer.fit(model, train_loader, val_loader)
+
+    # Get val predictions
+    preds = trainer.predict(trainer.lightning_module, val_loader,
+                            ckpt_path=checkpoint_cb.best_model_path)
+    preds = torch.cat(preds, dim=0).cpu().numpy()
+
+    if n_tasks == 1:
+        preds = preds.ravel()
+
+    return preds, trainer, checkpoint_cb
+
+
+def predict_chemprop(trainer, checkpoint_path, test_smiles, n_tasks=2):
+    """Get predictions from a trained chemprop model."""
+    test_data = [data.MoleculeDatapoint.from_smi(s) for s in test_smiles]
+    test_dset = data.MoleculeDataset(test_data)
+    test_loader = data.build_dataloader(test_dset, batch_size=64, shuffle=False)
+
+    preds = trainer.predict(trainer.lightning_module, test_loader,
+                             ckpt_path=checkpoint_path)
+    preds = torch.cat(preds, dim=0).cpu().numpy()
+
+    if n_tasks == 1:
+        return preds.ravel()
+    return preds
+
+
+# ============================================================================
+# SKLEARN MODEL
+# ============================================================================
+
+def train_sklearn_model(X_train, y_train, X_val, y_val):
+    """Train a single sklearn model and return predictions + metrics."""
+    scaler = StandardScaler()
+    X_train_sc = scaler.fit_transform(X_train)
+    X_val_sc = scaler.transform(X_val)
+
+    model = GradientBoostingRegressor(
+        n_estimators=500, max_depth=5, learning_rate=0.05,
+        subsample=0.8, min_samples_leaf=10, random_state=SEED,
+    )
+
+    model.fit(X_train_sc, y_train)
+    pred = model.predict(X_val_sc)
+    val_mae = mean_absolute_error(y_val, pred)
+
+    return (model, scaler), pred, val_mae
+
+
+# ============================================================================
+# ENSEMBLE WEIGHT OPTIMIZATION
+# ============================================================================
+
+def optimize_ensemble_weights(val_preds_dict, y_val):
+    """Find optimal non-negative weights minimizing MAE."""
+    names = sorted(val_preds_dict.keys())
+    n_models = len(names)
+
+    def objective(weights):
+        pred = np.zeros(len(y_val))
+        for w, name in zip(weights, names):
+            pred += max(w, 0) * val_preds_dict[name]
+        total = max(sum(max(w, 0) for w in weights), 1e-10)
+        pred /= total
+        return mean_absolute_error(y_val, pred)
+
+    init = np.ones(n_models) / n_models
+    bounds = [(0.0, 1.0) for _ in range(n_models)]
+    result = minimize(objective, init, method="L-BFGS-B", bounds=bounds)
+
+    optimal_weights = result.x
+    total = max(optimal_weights.sum(), 1e-10)
+    optimal_weights = optimal_weights / total
+
+    best_pred = sum(w * val_preds_dict[name] for w, name in zip(optimal_weights, names))
+    best_mae = mean_absolute_error(y_val, best_pred)
+
+    return dict(zip(names, optimal_weights)), best_mae
+
+
+# ============================================================================
+# MAIN EXPERIMENT
+# ============================================================================
+
+def preprocess_data(train, test=None):
+    """Full data preprocessing pipeline."""
+    print("Preparing primary assay data...")
+    primary_clean = prepare_primary_data(train)
+    print(f"  Primary data: {len(primary_clean)} unique compounds")
+    return primary_clean, test
+
 
 def configure_model():
-    # configure the model here
     return None
 
-def train_model(model, train):
-    # train the model here
-    return model
 
-def evaluate_model(model, test):
-    # run inference
-    predictions = ...
-    # calculate the MAE
-    mae = test["pEC50"] - predictions
-    mae = mae.abs().mean()
+def train_model(model_config, processed_data):
+    """Train models with CV-based weight optimization."""
+    primary_clean, test = processed_data
+    os.makedirs("checkpoints/chemprop_mt", exist_ok=True)
+
+    smis = primary_clean["SMILES"].values
+    y_pEC50 = primary_clean["pEC50"].values
+    y_Emax = primary_clean["Emax"].values
+
+    # Stratified train/val split
+    train_idx, val_idx = train_test_split(
+        np.arange(len(smis)), test_size=0.2, random_state=SEED,
+        stratify=np.digitize(y_pEC50, bins=[4.0, 5.0, 6.0, 8.0]),
+    )
+
+    train_smis, val_smis = smis[train_idx], smis[val_idx]
+    train_pec50, val_pec50 = y_pEC50[train_idx], y_pEC50[val_idx]
+    train_Emax, val_Emax = y_Emax[train_idx], y_Emax[val_idx]
+
+    print(f"\nTrain/Val split: {len(train_smis)} train, {len(val_smis)} val")
+
+    # -------------------------------------------------------------------------
+    # Phase 1: Train models on train/val to get val predictions + weights
+    # -------------------------------------------------------------------------
+    print("\n--- Phase 1: Training models on train/val split ---")
+
+    print("\n  Chemprop Multi-Task...")
+    train_mt = np.column_stack([train_pec50, train_Emax])
+    val_mt = np.column_stack([val_pec50, val_Emax])
+    mt_preds, _, _ = train_chemprop(
+        train_smis, train_mt, val_smis, val_mt,
+        d_h=512, depth=5, n_layers=2, hidden_dim=512,
+        checkpoint_dir="chemprop_mt", n_tasks=2,
+    )
+    mt_pec50 = mt_preds[:, 0]
+    print(f"    MAE (pEC50): {mean_absolute_error(val_pec50, mt_pec50):.4f}")
+
+    # Sklearn
+    print("\n  Sklearn (r2, 2048 bits)...")
+    X_train_r2 = compute_morgan_fps(train_smis, radius=2, n_bits=2048)
+    X_val_r2 = compute_morgan_fps(val_smis, radius=2, n_bits=2048)
+    
+    sk_trained, sk_preds, sk_mae = train_sklearn_model(
+        X_train_r2, train_pec50, X_val_r2, val_pec50
+    )
+    print(f"    Sklearn MAE: {sk_mae:.4f}")
+
+    # Ensemble weights
+    print("\n--- Optimizing Ensemble Weights ---")
+    all_val_preds = {
+        "chemprop_mt": mt_pec50,
+        "sklearn_gb": sk_preds
+    }
+
+    ensemble_weights, ensemble_mae = optimize_ensemble_weights(all_val_preds, val_pec50)
+    print(f"  Ensemble val MAE: {ensemble_mae:.4f}")
+    print("  Weights:")
+    for name, w in sorted(ensemble_weights.items(), key=lambda x: -x[1]):
+        print(f"    {name}: {w:.4f}")
+
+    # -------------------------------------------------------------------------
+    # Phase 2: Train final models on FULL data for test predictions
+    # -------------------------------------------------------------------------
+    print("\n--- Phase 2: Training final models on full data ---")
+
+    full_targets_mt = np.column_stack([y_pEC50, y_Emax])
+
+    print("  Chemprop MT...")
+    _, final_mt_trainer, final_mt_cp = train_chemprop(
+        smis, full_targets_mt, smis, full_targets_mt,
+        d_h=512, depth=5, n_layers=2, hidden_dim=512,
+        checkpoint_dir="chemprop_mt", n_tasks=2,
+    )
+
+    # Sklearn on full data
+    print("  Sklearn GB...")
+    X_full_r2 = compute_morgan_fps(smis, radius=2, n_bits=2048)
+    
+    model_orig, _ = sk_trained
+    scaler_final = StandardScaler()
+    X_scaled = scaler_final.fit_transform(X_full_r2)
+    
+    model_final = type(model_orig)(**model_orig.get_params())
+    model_final.fit(X_scaled, y_pEC50)
+    sklearn_final = (model_final, scaler_final)
+
+    return {
+        "chemprop_mt_trainer": final_mt_trainer,
+        "chemprop_mt_cp": final_mt_cp,
+        "sklearn_final": sklearn_final,
+        "ensemble_weights": ensemble_weights,
+        "ensemble_mae": ensemble_mae,
+        "test": test,
+    }
+
+
+def evaluate_model(model, test=None):
+    """Run inference on test set using all models and ensemble."""
+    if test is None:
+        test = model["test"]
+    test_smiles = test["SMILES"].values
+
+    print("\n--- Generating Predictions ---")
+
+    # Chemprop
+    chemprop_mt_pred = predict_chemprop(
+        model["chemprop_mt_trainer"],
+        model["chemprop_mt_cp"].best_model_path,
+        test_smiles, n_tasks=2,
+    )[:, 0]
+
+    # Sklearn
+    X_test_r2 = compute_morgan_fps(test_smiles, radius=2, n_bits=2048)
+    model_inst, scaler = model["sklearn_final"]
+    X_scaled = scaler.transform(X_test_r2)
+    sklearn_pred = model_inst.predict(X_scaled)
+
+    # Ensemble
+    all_preds = {
+        "chemprop_mt": chemprop_mt_pred,
+        "sklearn_gb": sklearn_pred,
+    }
+
+    final_pred = np.zeros(len(test_smiles))
+    total_weight = 0
+    for name, weight in model["ensemble_weights"].items():
+        if name in all_preds:
+            final_pred += weight * all_preds[name]
+            total_weight += weight
+
+    if total_weight > 0:
+        final_pred /= total_weight
+
+    final_pred = np.clip(final_pred, 1.5, 8.0)
+
+    print(f"  Chemprop MT: [{chemprop_mt_pred.min():.2f}, {chemprop_mt_pred.max():.2f}]")
+    print(f"  Sklearn GB:  [{sklearn_pred.min():.2f}, {sklearn_pred.max():.2f}]")
+    print(f"  Ensemble:    [{final_pred.min():.2f}, {final_pred.max():.2f}]")
+
+    # Evaluate
+    if "pEC50" in test.columns:
+        y_true = test["pEC50"].values
+        mae = mean_absolute_error(y_true, final_pred)
+        print(f"\n  Final MAE on test: {mae:.4f}")
+
+        print("\n  Individual model MAEs:")
+        for name, pred in sorted(all_preds.items()):
+            m = mean_absolute_error(y_true, pred)
+            print(f"    {name}: {m:.4f}")
+    else:
+        mae = model["ensemble_mae"]
+        print(f"\n  No ground truth - using val MAE: {mae:.4f}")
+
+    # Save predictions
+    results = pd.DataFrame({
+        "Molecule Name": test["Molecule Name"].values,
+        "SMILES": test_smiles,
+        "Chemprop_MT": chemprop_mt_pred,
+        "Sklearn_GB": sklearn_pred,
+        "Ensemble": final_pred
+    })
+    
+    results.to_csv("predictions.csv", index=False)
+    print("\n  Predictions saved to predictions.csv")
+
     return mae
+
 
 if __name__ == "__main__":
     from datetime import datetime
@@ -40,13 +448,23 @@ if __name__ == "__main__":
     start_time = datetime.now()
 
     try:
-        data = load_data()
-        train, test = preprocess_data(*data)
+        raw_data = load_data()
+        processed = preprocess_data(*raw_data)
         model = configure_model()
-        model = train_model(model, train)
-        mae = evaluate_model(model, test)
+        model = train_model(model, processed)
+        mae = evaluate_model(model)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         mae = f"CRASH ({e})"
-    
+    finally:
+        # Safely delete checkpoints regardless of script success/failure
+        if os.path.exists("checkpoints"):
+            print("\nCleaning up checkpoint files...")
+            shutil.rmtree("checkpoints")
+
+    elapsed = (datetime.now() - start_time).total_seconds()
     with open(outfile, "a") as f:
-        f.write(f"{now},{mae}\n")
+        f.write(f"{now},{mae},{elapsed:.1f}s\n")
+    print(f"\nTotal time: {elapsed:.1f}s")
+    print(f"Result logged to results.csv")

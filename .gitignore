@@ -4,6 +4,9 @@ examples
 # all csv files (submissions, training data, etc.)
 *.csv
 
+# experiment outputs
+checkpoints
+
 # Generic Python .gitignore
 
 # Byte-compiled / optimized / DLL files
