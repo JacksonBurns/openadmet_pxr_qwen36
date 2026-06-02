@@ -1,0 +1,4 @@
+# Lab Notebook — autoresearch/jun2
+# Started: 2026-06-02
+
+Run 01 | 2026-06-02 | Baseline | MAE: [pending] | Vanilla chemprop MT (d_h=512, depth=5, n_layers=2, hidden_dim=512) + sklearn GBR ensemble, optimized weights
