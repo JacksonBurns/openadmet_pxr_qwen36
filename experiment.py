@@ -124,6 +124,23 @@ def compute_torsion_fps(smis, n_bits=2048):
     return np.array(fps)
 
 
+def compute_maccs_fps(smis):
+    """Compute MACCS keys fingerprints (167-bit structural keys)."""
+    from rdkit.Chem import MACCSkeys
+    fps = []
+    for s in smis:
+        mol = Chem.MolFromSmiles(s)
+        if mol is None:
+            fps.append(np.zeros(167, dtype=np.float32))
+            continue
+        fp = MACCSkeys.GenMACCSKeys(mol)
+        arr = np.zeros(167, dtype=np.float32)
+        for bit in fp.GetOnBits():
+            arr[bit] = 1.0
+        fps.append(arr)
+    return np.array(fps)
+
+
 # ============================================================================
 # CHEMPROP MPNN MODEL
 # ============================================================================
@@ -337,9 +354,9 @@ def train_model(model_config, processed_data):
     sk_preds_dict = {}
     fp_configs = [
         ("r1", lambda s: compute_morgan_fps(s, radius=1, n_bits=2048)),
-        ("r3", lambda s: compute_morgan_fps(s, radius=3, n_bits=2048)),
         ("ap", lambda s: compute_atompair_fps(s, n_bits=2048)),
         ("tt", lambda s: compute_torsion_fps(s, n_bits=2048)),
+        ("maccs", compute_maccs_fps),
     ]
     for name, fp_fn in fp_configs:
         print(f"\n  Sklearn ({name}, 2048 bits)...")
