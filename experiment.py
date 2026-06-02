@@ -96,6 +96,34 @@ def compute_morgan_fps(smis, radius=2, n_bits=2048):
     return np.array(fps)
 
 
+def compute_atompair_fps(smis, n_bits=2048):
+    """Compute Atom Pair fingerprints."""
+    gen = rdFingerprintGenerator.GetAtomPairGenerator(fpSize=n_bits)
+    fps = []
+    for s in smis:
+        mol = Chem.MolFromSmiles(s)
+        if mol is None:
+            fps.append(np.zeros(n_bits, dtype=np.float32))
+            continue
+        fp = gen.GetFingerprintAsNumPy(mol)
+        fps.append(fp.astype(np.float32))
+    return np.array(fps)
+
+
+def compute_torsion_fps(smis, n_bits=2048):
+    """Compute Topological Torsion fingerprints."""
+    gen = rdFingerprintGenerator.GetTopologicalTorsionGenerator(fpSize=n_bits)
+    fps = []
+    for s in smis:
+        mol = Chem.MolFromSmiles(s)
+        if mol is None:
+            fps.append(np.zeros(n_bits, dtype=np.float32))
+            continue
+        fp = gen.GetFingerprintAsNumPy(mol)
+        fps.append(fp.astype(np.float32))
+    return np.array(fps)
+
+
 # ============================================================================
 # CHEMPROP MPNN MODEL
 # ============================================================================
@@ -304,19 +332,25 @@ def train_model(model_config, processed_data):
     mt_pec50 = mt_preds[:, 0]
     print(f"    MAE (pEC50): {mean_absolute_error(val_pec50, mt_pec50):.4f}")
 
-    # Sklearn at multiple radii
+    # Sklearn with diverse fingerprints
     sk_trained = {}
     sk_preds_dict = {}
-    for r in [1, 2, 3]:
-        print(f"\n  Sklearn (r{r}, 2048 bits)...")
-        X_train_r = compute_morgan_fps(train_smis, radius=r, n_bits=2048)
-        X_val_r = compute_morgan_fps(val_smis, radius=r, n_bits=2048)
+    fp_configs = [
+        ("r1", lambda s: compute_morgan_fps(s, radius=1, n_bits=2048)),
+        ("r3", lambda s: compute_morgan_fps(s, radius=3, n_bits=2048)),
+        ("ap", lambda s: compute_atompair_fps(s, n_bits=2048)),
+        ("tt", lambda s: compute_torsion_fps(s, n_bits=2048)),
+    ]
+    for name, fp_fn in fp_configs:
+        print(f"\n  Sklearn ({name}, 2048 bits)...")
+        X_train_fp = fp_fn(train_smis)
+        X_val_fp = fp_fn(val_smis)
         sk_tr, sk_pr, sk_m = train_sklearn_model(
-            X_train_r, train_pec50, X_val_r, val_pec50
+            X_train_fp, train_pec50, X_val_fp, val_pec50
         )
-        sk_trained[r] = sk_tr
-        sk_preds_dict[f"sklearn_r{r}"] = sk_pr
-        print(f"    Sklearn r{r} MAE: {sk_m:.4f}")
+        sk_trained[name] = (sk_tr, fp_fn)
+        sk_preds_dict[f"sklearn_{name}"] = sk_pr
+        print(f"    Sklearn {name} MAE: {sk_m:.4f}")
 
     # Ensemble weights
     print("\n--- Optimizing Ensemble Weights ---")
@@ -345,17 +379,17 @@ def train_model(model_config, processed_data):
         checkpoint_dir="chemprop_mt", n_tasks=2,
     )
 
-    # Sklearn on full data (all radii)
+    # Sklearn on full data (all fingerprint types)
     sklearn_finals = {}
-    for r in [1, 2, 3]:
-        print(f"  Sklearn r{r} GB...")
-        X_full_r = compute_morgan_fps(smis, radius=r, n_bits=2048)
-        model_orig, _ = sk_trained[r]
+    for name, (trained, fp_fn) in sk_trained.items():
+        print(f"  Sklearn {name} GB...")
+        X_full = fp_fn(smis)
+        model_orig, _ = trained
         scaler_final = StandardScaler()
-        X_scaled = scaler_final.fit_transform(X_full_r)
+        X_scaled = scaler_final.fit_transform(X_full)
         model_final = type(model_orig)(**model_orig.get_params())
         model_final.fit(X_scaled, y_pEC50)
-        sklearn_finals[r] = (model_final, scaler_final)
+        sklearn_finals[name] = (model_final, scaler_final, fp_fn)
 
     return {
         "chemprop_mt_trainer": final_mt_trainer,
@@ -382,13 +416,12 @@ def evaluate_model(model, test=None):
         test_smiles, n_tasks=2,
     )[:, 0]
 
-    # Sklearn at multiple radii
+     # Sklearn at multiple fingerprint types
     sk_test_preds = {}
-    for r in [1, 2, 3]:
-        X_test_r = compute_morgan_fps(test_smiles, radius=r, n_bits=2048)
-        model_inst, scaler = model["sklearn_finals"][r]
-        X_scaled = scaler.transform(X_test_r)
-        sk_test_preds[f"sklearn_r{r}"] = model_inst.predict(X_scaled)
+    for name, (model_inst, scaler, fp_fn) in model["sklearn_finals"].items():
+        X_test = fp_fn(test_smiles)
+        X_scaled = scaler.transform(X_test)
+        sk_test_preds[f"sklearn_{name}"] = model_inst.predict(X_scaled)
 
     # Ensemble
     all_preds = {
@@ -409,9 +442,9 @@ def evaluate_model(model, test=None):
     final_pred = np.clip(final_pred, 1.5, 8.0)
 
     print(f"  Chemprop MT: [{chemprop_mt_pred.min():.2f}, {chemprop_mt_pred.max():.2f}]")
-    for r in [1, 2, 3]:
-        p = sk_test_preds[f"sklearn_r{r}"]
-        print(f"  Sklearn r{r}:   [{p.min():.2f}, {p.max():.2f}]")
+    for name in sorted(sk_test_preds.keys()):
+        p = sk_test_preds[name]
+        print(f"  {name}:   [{p.min():.2f}, {p.max():.2f}]")
     print(f"  Ensemble:    [{final_pred.min():.2f}, {final_pred.max():.2f}]")
 
     # Evaluate
@@ -434,8 +467,8 @@ def evaluate_model(model, test=None):
         "SMILES": test_smiles,
         "Chemprop_MT": chemprop_mt_pred,
     })
-    for r in [1, 2, 3]:
-        results[f"Sklearn_r{r}"] = sk_test_preds[f"sklearn_r{r}"]
+    for name in sorted(sk_test_preds.keys()):
+        results[name] = sk_test_preds[name]
     results["Ensemble"] = final_pred
     
     results.to_csv("predictions.csv", index=False)

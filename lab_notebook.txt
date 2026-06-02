@@ -1,4 +1,12 @@
 # Lab Notebook — autoresearch/jun2
 # Started: 2026-06-02
 
-Run 01 | 2026-06-02 | Baseline | MAE: [pending] | Vanilla chemprop MT (d_h=512, depth=5, n_layers=2, hidden_dim=512) + sklearn GBR ensemble, optimized weights
+Run 01 | Baseline | MAE: 0.5572 | chemprop MT (d_h=512, depth=5, n_layers=2, hidden_dim=512) + sklearn GBR (r2), weights: chemprop 0.76, sklearn 0.24. Val MAE: 0.5237. Time: 532s.
+
+Run 02 | Higher LR (5e-4/5e-3/5e-4) | MAE: 0.5779 | REVERTED. Worse by 0.02. Aggressive LR schedule hurt convergence.
+
+Run 03 | Bigger model (d_h=1024, depth=6, patience=20) | MAE: 0.5568 | REVERTED. Tiny 0.0004 improvement. Not worth added complexity/VRAM.
+
+Run 04 | Higher dropout (0.1→0.3) | MAE: 0.5674 | REVERTED. Worse by 0.01. Regularization hurt too much.
+
+Run 05 | Multi-radius fingerprints (r1, r2, r3) | MAE: 0.5331 | ADvanced. -0.024 improvement. r1 (38% weight) captures local features well. r2 gets 0% weight (redundant). Chemprop weight dropped 76%→54%. Val MAE 0.5526 (was 0.5237), but test MAE improved (better generalization). Time: 870s.
