@@ -304,22 +304,26 @@ def train_model(model_config, processed_data):
     mt_pec50 = mt_preds[:, 0]
     print(f"    MAE (pEC50): {mean_absolute_error(val_pec50, mt_pec50):.4f}")
 
-    # Sklearn
-    print("\n  Sklearn (r2, 2048 bits)...")
-    X_train_r2 = compute_morgan_fps(train_smis, radius=2, n_bits=2048)
-    X_val_r2 = compute_morgan_fps(val_smis, radius=2, n_bits=2048)
-    
-    sk_trained, sk_preds, sk_mae = train_sklearn_model(
-        X_train_r2, train_pec50, X_val_r2, val_pec50
-    )
-    print(f"    Sklearn MAE: {sk_mae:.4f}")
+    # Sklearn at multiple radii
+    sk_trained = {}
+    sk_preds_dict = {}
+    for r in [1, 2, 3]:
+        print(f"\n  Sklearn (r{r}, 2048 bits)...")
+        X_train_r = compute_morgan_fps(train_smis, radius=r, n_bits=2048)
+        X_val_r = compute_morgan_fps(val_smis, radius=r, n_bits=2048)
+        sk_tr, sk_pr, sk_m = train_sklearn_model(
+            X_train_r, train_pec50, X_val_r, val_pec50
+        )
+        sk_trained[r] = sk_tr
+        sk_preds_dict[f"sklearn_r{r}"] = sk_pr
+        print(f"    Sklearn r{r} MAE: {sk_m:.4f}")
 
     # Ensemble weights
     print("\n--- Optimizing Ensemble Weights ---")
     all_val_preds = {
         "chemprop_mt": mt_pec50,
-        "sklearn_gb": sk_preds
     }
+    all_val_preds.update(sk_preds_dict)
 
     ensemble_weights, ensemble_mae = optimize_ensemble_weights(all_val_preds, val_pec50)
     print(f"  Ensemble val MAE: {ensemble_mae:.4f}")
@@ -341,22 +345,22 @@ def train_model(model_config, processed_data):
         checkpoint_dir="chemprop_mt", n_tasks=2,
     )
 
-    # Sklearn on full data
-    print("  Sklearn GB...")
-    X_full_r2 = compute_morgan_fps(smis, radius=2, n_bits=2048)
-    
-    model_orig, _ = sk_trained
-    scaler_final = StandardScaler()
-    X_scaled = scaler_final.fit_transform(X_full_r2)
-    
-    model_final = type(model_orig)(**model_orig.get_params())
-    model_final.fit(X_scaled, y_pEC50)
-    sklearn_final = (model_final, scaler_final)
+    # Sklearn on full data (all radii)
+    sklearn_finals = {}
+    for r in [1, 2, 3]:
+        print(f"  Sklearn r{r} GB...")
+        X_full_r = compute_morgan_fps(smis, radius=r, n_bits=2048)
+        model_orig, _ = sk_trained[r]
+        scaler_final = StandardScaler()
+        X_scaled = scaler_final.fit_transform(X_full_r)
+        model_final = type(model_orig)(**model_orig.get_params())
+        model_final.fit(X_scaled, y_pEC50)
+        sklearn_finals[r] = (model_final, scaler_final)
 
     return {
         "chemprop_mt_trainer": final_mt_trainer,
         "chemprop_mt_cp": final_mt_cp,
-        "sklearn_final": sklearn_final,
+        "sklearn_finals": sklearn_finals,
         "ensemble_weights": ensemble_weights,
         "ensemble_mae": ensemble_mae,
         "test": test,
@@ -378,17 +382,19 @@ def evaluate_model(model, test=None):
         test_smiles, n_tasks=2,
     )[:, 0]
 
-    # Sklearn
-    X_test_r2 = compute_morgan_fps(test_smiles, radius=2, n_bits=2048)
-    model_inst, scaler = model["sklearn_final"]
-    X_scaled = scaler.transform(X_test_r2)
-    sklearn_pred = model_inst.predict(X_scaled)
+    # Sklearn at multiple radii
+    sk_test_preds = {}
+    for r in [1, 2, 3]:
+        X_test_r = compute_morgan_fps(test_smiles, radius=r, n_bits=2048)
+        model_inst, scaler = model["sklearn_finals"][r]
+        X_scaled = scaler.transform(X_test_r)
+        sk_test_preds[f"sklearn_r{r}"] = model_inst.predict(X_scaled)
 
     # Ensemble
     all_preds = {
         "chemprop_mt": chemprop_mt_pred,
-        "sklearn_gb": sklearn_pred,
     }
+    all_preds.update(sk_test_preds)
 
     final_pred = np.zeros(len(test_smiles))
     total_weight = 0
@@ -403,7 +409,9 @@ def evaluate_model(model, test=None):
     final_pred = np.clip(final_pred, 1.5, 8.0)
 
     print(f"  Chemprop MT: [{chemprop_mt_pred.min():.2f}, {chemprop_mt_pred.max():.2f}]")
-    print(f"  Sklearn GB:  [{sklearn_pred.min():.2f}, {sklearn_pred.max():.2f}]")
+    for r in [1, 2, 3]:
+        p = sk_test_preds[f"sklearn_r{r}"]
+        print(f"  Sklearn r{r}:   [{p.min():.2f}, {p.max():.2f}]")
     print(f"  Ensemble:    [{final_pred.min():.2f}, {final_pred.max():.2f}]")
 
     # Evaluate
@@ -425,9 +433,10 @@ def evaluate_model(model, test=None):
         "Molecule Name": test["Molecule Name"].values,
         "SMILES": test_smiles,
         "Chemprop_MT": chemprop_mt_pred,
-        "Sklearn_GB": sklearn_pred,
-        "Ensemble": final_pred
     })
+    for r in [1, 2, 3]:
+        results[f"Sklearn_r{r}"] = sk_test_preds[f"sklearn_r{r}"]
+    results["Ensemble"] = final_pred
     
     results.to_csv("predictions.csv", index=False)
     print("\n  Predictions saved to predictions.csv")
