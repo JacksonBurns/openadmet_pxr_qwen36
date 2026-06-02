@@ -1,6 +1,9 @@
 # examples for Qwen to learn from
 examples
 
+# all csv files (submissions, training data, etc.)
+*.csv
+
 # Generic Python .gitignore
 
 # Byte-compiled / optimized / DLL files
