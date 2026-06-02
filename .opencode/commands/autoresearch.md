@@ -1,6 +1,6 @@
 # autoresearch
 
-This is an experiment to have `Qwen3.6` do its own research toward developing a machine learning model to predict activity against PXR.
+Do your own research toward developing a machine learning model to predict activity against PXR.
 
 ## Setup
 
@@ -10,6 +10,7 @@ To set up a new experiment, work with the user to:
 2. **Create the branch**: `git checkout -b autoresearch/<tag>` from current master.
 3. **Read the in-scope files**: The repo is small. Read these files for full context:
    - `README.md` — repository context.
+   - `examples/` - example code for using the various machine learning tools available to you
    - `train.py` — the file you modify. Model architecture, optimizer, training loop.
 4. **Initialize results.tsv**: Create `results.tsv` with just the header row. The baseline will be recorded after the first run.
 5. **Confirm and go**: Confirm setup looks good.
