@@ -12,7 +12,7 @@ To set up a new experiment, work with the user to:
    - `README.md` — repository context.
    - `examples/` - example code for using the various machine learning tools available to you
    - `train.py` — the file you modify. Model architecture, optimizer, training loop.
-4. **Initialize results.tsv**: Create `results.tsv` with just the header row. The baseline will be recorded after the first run.
+4. **Initialize lab_notebook.txt**: Create `lab_notebook.txt`.
 5. **Confirm and go**: Confirm setup looks good.
 
 Once you get confirmation, kick off the experimentation.
