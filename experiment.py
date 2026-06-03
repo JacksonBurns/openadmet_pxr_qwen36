@@ -12,6 +12,7 @@ from scipy.optimize import minimize
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from lightning import pytorch as pl
 from chemprop import data, models, nn
+from chemprop.featurizers import SimpleMoleculeMolGraphFeaturizer
 from rdkit import Chem
 from rdkit.Chem import rdFingerprintGenerator
 
@@ -122,6 +123,93 @@ def compute_torsion_fps(smis, n_bits=2048):
         fp = gen.GetFingerprintAsNumPy(mol)
         fps.append(fp.astype(np.float32))
     return np.array(fps)
+
+
+def train_chemeleon(smis, ys, val_smis, val_ys, batch_size=64,
+                    max_epochs=80, checkpoint_dir="chemeleon", n_tasks=1):
+    """Finetune CheMeleon foundation model for regression."""
+    import torch as pt
+
+    if ys.ndim == 1:
+        ys = ys.reshape(-1, 1)
+    if val_ys.ndim == 1:
+        val_ys = val_ys.reshape(-1, 1)
+
+    featurizer = SimpleMoleculeMolGraphFeaturizer()
+    cheameleon_mp = pt.load("chemeleon_mp.pt", weights_only=True)
+    mp = nn.BondMessagePassing(**chemeleon_mp['hyper_parameters'])
+    mp.load_state_dict(chemeleon_mp['state_dict'])
+
+    train_data = [
+        data.MoleculeDatapoint.from_smi(s, y.tolist() if hasattr(y, 'tolist') else [y])
+        for s, y in zip(smis, ys)
+    ]
+    val_data = [
+        data.MoleculeDatapoint.from_smi(s, y.tolist() if hasattr(y, 'tolist') else [y])
+        for s, y in zip(val_smis, val_ys)
+    ]
+
+    train_dset = data.MoleculeDataset(train_data, featurizer)
+    output_scaler = train_dset.normalize_targets()
+    val_dset = data.MoleculeDataset(val_data, featurizer)
+    val_dset.normalize_targets(output_scaler)
+
+    train_loader = data.build_dataloader(train_dset, batch_size=batch_size)
+    val_loader = data.build_dataloader(val_dset, batch_size=batch_size, shuffle=False)
+
+    output_transform = nn.transforms.UnscaleTransform.from_standard_scaler(output_scaler)
+    ffn = nn.RegressionFFN(
+        n_tasks=n_tasks,
+        output_transform=output_transform,
+        input_dim=mp.output_dim,
+        hidden_dim=mp.output_dim,
+        n_layers=2,
+        dropout=0.2,
+    )
+    model = models.MPNN(
+        mp,
+        nn.MeanAggregation(),
+        ffn,
+        batch_norm=False,
+        init_lr=1e-5,
+        max_lr=1e-4,
+        final_lr=1e-5,
+    )
+
+    checkpoint_cb = ModelCheckpoint(
+        dirpath=f"checkpoints/{checkpoint_dir}",
+        filename="best-{epoch:02d}-{val_loss:.4f}",
+        monitor="val_loss",
+        mode="min",
+        save_top_k=1,
+        save_last=True,
+    )
+    early_stop_cb = EarlyStopping(
+        monitor="val_loss",
+        patience=15,
+        mode="min",
+    )
+
+    trainer = pl.Trainer(
+        max_epochs=max_epochs,
+        accelerator="auto",
+        devices=1,
+        callbacks=[checkpoint_cb, early_stop_cb],
+        logger=False,
+        enable_progress_bar=False,
+        enable_model_summary=False,
+    )
+
+    trainer.fit(model, train_loader, val_loader)
+
+    preds = trainer.predict(trainer.lightning_module, val_loader,
+                            ckpt_path=checkpoint_cb.best_model_path)
+    preds = pt.cat(preds, dim=0).cpu().numpy()
+
+    if n_tasks == 1:
+        preds = preds.ravel()
+
+    return preds, trainer, checkpoint_cb
 
 
 def compute_maccs_fps(smis):
@@ -349,6 +437,14 @@ def train_model(model_config, processed_data):
     mt_pec50 = mt_preds[:, 0]
     print(f"    MAE (pEC50): {mean_absolute_error(val_pec50, mt_pec50):.4f}")
 
+    # CheMeleon foundation model (finetuned, low LR)
+    print("\n  CheMeleon Foundation...")
+    ch_preds, _, _ = train_chemeleon(
+        train_smis, train_pec50, val_smis, val_pec50,
+        checkpoint_dir="chemeleon", n_tasks=1,
+    )
+    print(f"    MAE (pEC50): {mean_absolute_error(val_pec50, ch_preds):.4f}")
+
     # Sklearn with diverse fingerprints
     sk_trained = {}
     sk_preds_dict = {}
@@ -373,6 +469,7 @@ def train_model(model_config, processed_data):
     print("\n--- Optimizing Ensemble Weights ---")
     all_val_preds = {
         "chemprop_mt": mt_pec50,
+        "chemeleon": ch_preds,
     }
     all_val_preds.update(sk_preds_dict)
 
@@ -396,6 +493,21 @@ def train_model(model_config, processed_data):
         checkpoint_dir="chemprop_mt", n_tasks=2,
     )
 
+    # CheMeleon with hold-out val to prevent overfitting
+    print("  CheMeleon Foundation (hold-out val)...")
+    holdout_idx = np.arange(len(smis))
+    np.random.seed(SEED + 1)
+    np.random.shuffle(holdout_idx)
+    split_pt = int(0.9 * len(holdout_idx))
+    ch_train_smis = smis[holdout_idx[:split_pt]]
+    ch_train_y = y_pEC50[holdout_idx[:split_pt]]
+    ch_val_smis = smis[holdout_idx[split_pt:]]
+    ch_val_y = y_pEC50[holdout_idx[split_pt:]]
+    _, final_ch_trainer, final_ch_cp = train_chemeleon(
+        ch_train_smis, ch_train_y, ch_val_smis, ch_val_y,
+        checkpoint_dir="chemeleon", n_tasks=1,
+    )
+
     # Sklearn on full data (all fingerprint types)
     sklearn_finals = {}
     for name, (trained, fp_fn) in sk_trained.items():
@@ -411,6 +523,8 @@ def train_model(model_config, processed_data):
     return {
         "chemprop_mt_trainer": final_mt_trainer,
         "chemprop_mt_cp": final_mt_cp,
+        "chemeleon_trainer": final_ch_trainer,
+        "chemeleon_cp": final_ch_cp,
         "sklearn_finals": sklearn_finals,
         "ensemble_weights": ensemble_weights,
         "ensemble_mae": ensemble_mae,
@@ -433,6 +547,16 @@ def evaluate_model(model, test=None):
         test_smiles, n_tasks=2,
     )[:, 0]
 
+    # CheMeleon
+    ch_test_data = [data.MoleculeDatapoint.from_smi(s) for s in test_smiles]
+    ch_test_dset = data.MoleculeDataset(ch_test_data, SimpleMoleculeMolGraphFeaturizer())
+    ch_test_loader = data.build_dataloader(ch_test_dset, batch_size=64, shuffle=False)
+    ch_preds = model["chemeleon_trainer"].predict(
+        model["chemeleon_trainer"].lightning_module, ch_test_loader,
+        ckpt_path=model["chemeleon_cp"].best_model_path)
+    ch_preds = torch.cat(ch_preds, dim=0).cpu().numpy().ravel()
+    print(f"  CheMeleon: [{ch_preds.min():.2f}, {ch_preds.max():.2f}]")
+
      # Sklearn at multiple fingerprint types
     sk_test_preds = {}
     for name, (model_inst, scaler, fp_fn) in model["sklearn_finals"].items():
@@ -443,6 +567,7 @@ def evaluate_model(model, test=None):
     # Ensemble
     all_preds = {
         "chemprop_mt": chemprop_mt_pred,
+        "chemeleon": ch_preds,
     }
     all_preds.update(sk_test_preds)
 
