@@ -136,7 +136,7 @@ def train_chemeleon(smis, ys, val_smis, val_ys, batch_size=64,
         val_ys = val_ys.reshape(-1, 1)
 
     featurizer = SimpleMoleculeMolGraphFeaturizer()
-    cheameleon_mp = pt.load("chemeleon_mp.pt", weights_only=True)
+    chemeleon_mp = pt.load("chemeleon_mp.pt", weights_only=True)
     mp = nn.BondMessagePassing(**chemeleon_mp['hyper_parameters'])
     mp.load_state_dict(chemeleon_mp['state_dict'])
 
