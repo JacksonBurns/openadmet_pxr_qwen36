@@ -1,14 +1,12 @@
 # Lab Notebook — autoresearch/jun2
 # Started: 2026-06-02
 
-**Best: MAE 0.4855** | CheMeleon hold-out 20%, low LR (1e-5/1e-4), dropout 0.2, 4 fp types.
+**Best: MAE 0.4855** | CheMeleon hold-out 20%, low LR, dropout 0.2, 4 fp types.
 
-Run 01 | Baseline | MAE: 0.5572 | chemprop MT + sklearn GBR (r2).
-Run 02-07 | Diverse fp + MACCS | MAE: 0.5066.
-Run 08-13 | CheMeleon v1 (no reg) | REVERTED.
-Run 14 | CheMeleon v2 (low LR, hold-out 10%) | MAE: 0.4939.
-Run 15-20 | CheMeleon variants | REVERTED.
-Run 21 | CheMeleon hold-out 20% | MAE: 0.4855. ★ BEST
-Run 22-27 | CheMeleon variants (30%, 3-FFN, small-FFN, diversity) | REVERTED.
+Run 01 | Baseline | MAE: 0.5572
+Run 05-07 | Diverse fp + MACCS | MAE: 0.5066
+Run 14 | CheMeleon v2 (10% hold-out) | MAE: 0.4939
+Run 21 | CheMeleon hold-out 20% | MAE: 0.4855 ★ BEST
+Run 22-30 | 9 consecutive CheMeleon variants | REVERTED (30% hold-out, 3-FFN, small-FFN, diversity, grad-clip, frozen-mp, bs128, etc.)
 
-12 consecutive failures after Run 21. Plateau.
+PLATEAU: 9 failures. Best config stable at 0.4855.
