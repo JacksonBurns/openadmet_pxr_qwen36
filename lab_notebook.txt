@@ -2,16 +2,15 @@
 # Started: 2026-06-02
 
 Run 01 | Baseline | MAE: 0.5572 | chemprop MT + sklearn GBR (r2). Time: 532s.
-Run 02 | Higher LR | MAE: 0.5779 | REVERTED.
-Run 03 | Bigger model (d_h=1024) | MAE: 0.5568 | REVERTED.
-Run 04 | Higher dropout (0.3) | MAE: 0.5674 | REVERTED.
-Run 05 | Multi-radius (r1, r2, r3) | MAE: 0.5331 | Advanced. -0.024.
-Run 06 | Diverse fp (r1, r3, ap, tt) | MAE: 0.5084 | Advanced. -0.025.
-Run 07 | MACCS keys (r1, ap, tt, maccs) | MAE: 0.5066 | Advanced. -0.002.
-Run 08-12 | Multiple failures | REVERTED (count-based r2, RF, descriptors, attention agg, single-task, batch size).
-Run 13 | CheMeleon v1 (no reg) | MAE: 0.5331 | REVERTED. Overfit (val 0.4702 → test 0.5331).
-Run 14 | CheMeleon v2 (low LR 1e-5/1e-4, hold-out val Phase 2, dropout 0.2) | MAE: 0.4939 | Advanced! -0.013.
-  - CheMeleon individual MAE: 0.5141 (best single model ever)
-  - Val MAE: 0.5219 (no suspicious gap)
-  - Ensemble: che 55%, chemprop 27%, ap 17%. Time: 1061s.
-  - Key: CheMeleon pretrained on massive dataset generalizes well. Hold-out val in Phase 2 critical.
+Run 02-04 | Hyperparameter tuning | REVERTED.
+Run 05 | Multi-radius (r1, r2, r3) | MAE: 0.5331 | Advanced.
+Run 06 | Diverse fp (r1, r3, ap, tt) | MAE: 0.5084 | Advanced.
+Run 07 | MACCS keys (r1, ap, tt, maccs) | MAE: 0.5066 | Advanced.
+Run 08-12 | Multiple structural changes | REVERTED.
+Run 13 | CheMeleon v1 (no reg) | MAE: 0.5331 | REVERTED.
+Run 14 | CheMeleon v2 (low LR, hold-out 10%) | MAE: 0.4939 | Advanced.
+Run 15 | CheMeleon stronger reg (5e-6 LR, dropout 0.3) | MAE: 0.5026 | REVERTED.
+Run 16 | CheMeleon + chemprop ST diversity | MAE: 0.5025 | REVERTED.
+Run 17 | CheMeleon hold-out 20% | MAE: 0.4855 | Advanced! -0.008.
+  - CheMeleon individual: 0.5205. Ensemble: che 54%, chemprop 29%, ap 12%, tt 4%.
+  - Time: 1069s.
