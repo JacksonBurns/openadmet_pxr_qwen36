@@ -1,16 +1,14 @@
 # Lab Notebook — autoresearch/jun2
 # Started: 2026-06-02
 
-Run 01 | Baseline | MAE: 0.5572 | chemprop MT + sklearn GBR (r2). Time: 532s.
-Run 02-04 | Hyperparameter tuning | REVERTED.
-Run 05 | Multi-radius (r1, r2, r3) | MAE: 0.5331 | Advanced.
-Run 06 | Diverse fp (r1, r3, ap, tt) | MAE: 0.5084 | Advanced.
-Run 07 | MACCS keys (r1, ap, tt, maccs) | MAE: 0.5066 | Advanced.
-Run 08-12 | Multiple structural changes | REVERTED.
-Run 13 | CheMeleon v1 (no reg) | MAE: 0.5331 | REVERTED.
-Run 14 | CheMeleon v2 (low LR, hold-out 10%) | MAE: 0.4939 | Advanced.
-Run 15 | CheMeleon stronger reg (5e-6 LR, dropout 0.3) | MAE: 0.5026 | REVERTED.
-Run 16 | CheMeleon + chemprop ST diversity | MAE: 0.5025 | REVERTED.
-Run 17 | CheMeleon hold-out 20% | MAE: 0.4855 | Advanced! -0.008.
-  - CheMeleon individual: 0.5205. Ensemble: che 54%, chemprop 29%, ap 12%, tt 4%.
-  - Time: 1069s.
+**Best: MAE 0.4855** | CheMeleon hold-out 20%, low LR (1e-5/1e-4), dropout 0.2, 4 fp types.
+
+Run 01 | Baseline | MAE: 0.5572 | chemprop MT + sklearn GBR (r2).
+Run 02-07 | Diverse fp + MACCS | MAE: 0.5066.
+Run 08-13 | CheMeleon v1 (no reg) | REVERTED.
+Run 14 | CheMeleon v2 (low LR, hold-out 10%) | MAE: 0.4939.
+Run 15-20 | CheMeleon variants | REVERTED.
+Run 21 | CheMeleon hold-out 20% | MAE: 0.4855. ★ BEST
+Run 22-27 | CheMeleon variants (30%, 3-FFN, small-FFN, diversity) | REVERTED.
+
+12 consecutive failures after Run 21. Plateau.
