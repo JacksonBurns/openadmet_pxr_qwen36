@@ -8,7 +8,7 @@ from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-
+from scipy.optimize import minimize
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from lightning import pytorch as pl
 from chemprop import data, models, nn
@@ -362,8 +362,21 @@ def optimize_ensemble_weights(val_preds_dict, y_val):
     names = sorted(val_preds_dict.keys())
     n_models = len(names)
 
-    # Equal weights to avoid overfitting weight optimization to val split
-    optimal_weights = np.ones(n_models) / n_models
+    def objective(weights):
+        pred = np.zeros(len(y_val))
+        for w, name in zip(weights, names):
+            pred += max(w, 0) * val_preds_dict[name]
+        total = max(sum(max(w, 0) for w in weights), 1e-10)
+        pred /= total
+        return mean_absolute_error(y_val, pred)
+
+    init = np.ones(n_models) / n_models
+    bounds = [(0.0, 1.0) for _ in range(n_models)]
+    result = minimize(objective, init, method="L-BFGS-B", bounds=bounds)
+
+    optimal_weights = result.x
+    total = max(optimal_weights.sum(), 1e-10)
+    optimal_weights = optimal_weights / total
 
     best_pred = sum(w * val_preds_dict[name] for w, name in zip(optimal_weights, names))
     best_mae = mean_absolute_error(y_val, best_pred)
