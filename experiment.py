@@ -361,22 +361,49 @@ def train_sklearn_model(X_train, y_train, X_val, y_val):
 # ============================================================================
 
 def optimize_ensemble_weights(val_preds_dict, y_val):
-    """Ridge stacking meta-learner on top model predictions."""
+    """Grid-search optimal 2-weight for Chemprop+CheMeleon core,
+    then add remaining models with inverse-MAE weighting."""
     names = sorted(val_preds_dict.keys())
-    n_models = len(names)
-    X_meta = np.column_stack([val_preds_dict[name] for name in names])
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X_meta)
-    meta = Ridge(alpha=1.0, random_state=SEED)
-    meta.fit(X_scaled, y_val)
-    coefs = meta.coef_
-    weights = np.abs(coefs)
-    total = weights.sum()
-    weights = weights / total if total > 0 else np.ones(n_models) / n_models
-    weight_dict = dict(zip(names, weights))
-    pred = meta.predict(X_scaled)
-    best_mae = mean_absolute_error(y_val, pred)
-    return weight_dict, best_mae
+    
+    # Focus on the two strongest models
+    core = ["chemprop_mt", "chemeleon"]
+    if "chemprop_mt" not in val_preds_dict or "chemeleon" not in val_preds_dict:
+        core = [n for n in names if n in ["chemprop_mt", "chemeleon"]]
+    
+    best_w = 0.5
+    best_mae = float('inf')
+    for w in np.arange(0.0, 1.01, 0.05):
+        pred = w * val_preds_dict["chemprop_mt"] + (1 - w) * val_preds_dict["chemeleon"]
+        mae = mean_absolute_error(y_val, pred)
+        if mae < best_mae:
+            best_mae = mae
+            best_w = w
+    
+    # Add remaining models with inverse-MAE weights
+    weight_dict = {
+        "chemprop_mt": best_w,
+        "chemeleon": 1 - best_w,
+    }
+    
+    for name in names:
+        if name not in weight_dict:
+            model_mae = mean_absolute_error(y_val, val_preds_dict[name])
+            if model_mae < best_mae:
+                weight_dict[name] = 0.1
+            else:
+                weight_dict[name] = 0.0
+    
+    # Normalize
+    total = sum(weight_dict.values())
+    weight_dict = {k: v / total for k, v in weight_dict.items()}
+    
+    # Compute ensemble prediction
+    pred = np.zeros(len(y_val))
+    for name in names:
+        pred += weight_dict.get(name, 0) * val_preds_dict[name]
+    
+    final_mae = mean_absolute_error(y_val, pred)
+    return weight_dict, final_mae
 
 
 # ============================================================================
