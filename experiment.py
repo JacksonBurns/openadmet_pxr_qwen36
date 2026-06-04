@@ -171,9 +171,9 @@ def train_chemeleon(smis, ys, val_smis, val_ys, batch_size=64,
         nn.NormAggregation(),
         ffn,
         batch_norm=False,
-        init_lr=1e-4,
-        max_lr=5e-4,
-        final_lr=1e-4,
+        init_lr=1e-5,
+        max_lr=1e-4,
+        final_lr=1e-5,
     )
 
     checkpoint_cb = ModelCheckpoint(
