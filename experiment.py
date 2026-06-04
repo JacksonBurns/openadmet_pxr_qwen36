@@ -235,7 +235,7 @@ def compute_maccs_fps(smis):
 # ============================================================================
 
 def train_chemprop(smis, ys, val_smis, val_ys,
-                   d_h=512, depth=5, n_layers=2, hidden_dim=512,
+d_h=512, depth=3, n_layers=2, hidden_dim=512,
                    batch_size=64, max_epochs=80, checkpoint_dir="chemprop_mt",
                    n_tasks=2):
     """Train a chemprop MPNN for regression."""
