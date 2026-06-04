@@ -1,13 +1,2 @@
 Lab notebook for autoresearch/jun4 (started 2026-06-04)
 Baseline model: Chemprop MT (pEC50+Emax) + CheMeleon + 4x sklearn (Morgan r1, AtomPair, Torsion, MACCS) with Ridge stacking ensemble.
-
-Run 01: Baseline (as-is) — MAE 0.4947, 837.5s.
-  Val ensemble: 0.4650. Chemprop MT: 0.5257 (early stopped ep 10). CheMeleon: 0.4964.
-  Test: chemprop 0.5581, chemeleon 0.5130. CheMeleon is strongest single model on test.
-
-Run 02 (ATTEMPTED): Stronger XGB + Chemprop depth 6 — MAE 0.5042 (WORSE, reverted)
-  Overcapacity hurt. XGB 2000 est/depth 7 was too much.
-
-Run 03: Chemprop patience 12->20, LR lowered 10x, Morgan r1->r2
-  Hypothesis: Chemprop undertrained (stopped at ep 10). Lower LR + more patience = better training.
-  r2 captures more molecular context than r1.

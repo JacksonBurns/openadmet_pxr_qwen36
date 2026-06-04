@@ -271,9 +271,9 @@ def train_chemprop(smis, ys, val_smis, val_ys,
         nn.NormAggregation(),
         ffn,
         batch_norm=True,
-        init_lr=1e-5,
-        max_lr=1e-4,
-        final_lr=1e-5,
+        init_lr=1e-4,
+        max_lr=5e-4,
+        final_lr=1e-4,
     )
 
     checkpoint_cb = ModelCheckpoint(
@@ -286,7 +286,7 @@ def train_chemprop(smis, ys, val_smis, val_ys,
     )
     early_stop_cb = EarlyStopping(
         monitor="val_loss",
-        patience=20,
+        patience=12,
         mode="min",
     )
 
@@ -444,7 +444,7 @@ def train_model(model_config, processed_data):
     sk_trained = {}
     sk_preds_dict = {}
     fp_configs = [
-        ("r2", lambda s: compute_morgan_fps(s, radius=2, n_bits=2048)),
+        ("r1", lambda s: compute_morgan_fps(s, radius=1, n_bits=2048)),
         ("ap", lambda s: compute_atompair_fps(s, n_bits=2048)),
         ("tt", lambda s: compute_torsion_fps(s, n_bits=2048)),
         ("maccs", compute_maccs_fps),
