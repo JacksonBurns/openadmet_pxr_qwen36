@@ -168,7 +168,7 @@ def train_chemeleon(smis, ys, val_smis, val_ys, batch_size=64,
     )
     model = models.MPNN(
         mp,
-        nn.AttentiveAggregation(output_size=mp.output_dim),
+        nn.AttentiveAggregation(),
         ffn,
         batch_norm=False,
         init_lr=1e-5,
