@@ -1,2 +1,12 @@
 Lab notebook for autoresearch/jun4 (started 2026-06-04)
-Baseline model: Chemprop MT (pEC50+Emax) + CheMeleon + 4x sklearn (Morgan r1, AtomPair, Torsion, MACCS) with Ridge stacking ensemble.
+
+Run 01: Baseline — MAE 0.4947, 837.5s. Val: 0.4650.
+  CheMeleon: 0.4964, Chemprop MT: 0.5257, sklearn: 0.57-0.62.
+  Weights: chemprop 45%, chemeleon 35%, sklearn 20%.
+
+Run 02: Stronger XGB + Chemprop depth 6 — MAE 0.5042 (reverted)
+Run 03: Chemprop LR 10x lower, patience 20, Morgan r1->r2 — MAE 0.4975 (reverted)
+Run 04: Chemprop single-task — MAE 0.5035 (reverted)
+
+Run 05: CheMeleon FFN: n_layers 2->3, dropout 0.2->0.1, batch_norm True
+  Hypothesis: stronger CheMeleon FFN = better ensemble (dominant model).
