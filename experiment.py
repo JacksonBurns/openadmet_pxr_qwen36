@@ -571,8 +571,15 @@ def evaluate_model(model, test=None):
     }
     all_preds.update(sk_test_preds)
 
-    final_pred = (all_preds["chemeleon"] + all_preds["chemprop_mt"] +
-               all_preds.get("sklearn_ap", all_preds["chemeleon"])) / 3.0
+    final_pred = np.zeros(len(test_smiles))
+    total_weight = 0
+    for name, weight in model["ensemble_weights"].items():
+        if name in all_preds:
+            final_pred += weight * all_preds[name]
+            total_weight += weight
+
+    if total_weight > 0:
+        final_pred /= total_weight
 
     final_pred = np.clip(final_pred, 1.5, 8.0)
 
