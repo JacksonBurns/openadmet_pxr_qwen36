@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import torch
 from sklearn.ensemble import GradientBoostingRegressor
-from sklearn.linear_model import ElasticNet
+from sklearn.linear_model import Ridge
 from sklearn.metrics import mean_absolute_error
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
@@ -365,7 +365,7 @@ def optimize_ensemble_weights(val_preds_dict, y_val):
     X_meta = np.column_stack([val_preds_dict[name] for name in names])
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X_meta)
-    meta = ElasticNet(alpha=0.1, l1_ratio=0.5, positive=True)
+    meta = Ridge(alpha=1.0)
     meta.fit(X_scaled, y_val)
     coefs = meta.coef_
     weights = np.abs(coefs)
