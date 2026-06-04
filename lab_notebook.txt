@@ -1,9 +1,2 @@
 Lab notebook for autoresearch/jun4 (started 2026-06-04)
-
-Run 01: Baseline — MAE 0.4947, 837.5s. Val: 0.4650.
-
-Run 02-07: All reverted (various model/architecture tweaks, none helped)
-
-Run 08: Filter training to std_error <= 0.25 (high-quality data only)
-  Structural change: cleaner data = better generalization.
-  Trade-off: fewer training samples.
+Baseline model: Chemprop MT (pEC50+Emax) + CheMeleon + 4x sklearn (Morgan r1, AtomPair, Torsion, MACCS) with Ridge stacking ensemble.
