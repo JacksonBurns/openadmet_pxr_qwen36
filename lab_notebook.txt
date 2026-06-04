@@ -10,4 +10,6 @@ Run 04 | CheMeleon SumAggregation | 0.5080 | ADVANCED — reduced val-to-test ga
 Run 05 | CheMeleon NormAggregation | 0.4924 | ADVANCED — big gain. CheMeleon test 0.5088.
 Run 06 | AttentiveAggregation | CRASH/0.5023 | REVERT.
 Run 07 | CheMeleon batch_norm=True | 0.5205 | REVERT — batch_norm hurts.
-Run 08 | Both CheMeleon+Chemprop NormAgg | 0.4900 | ADVANCED — Chemprop test 0.5534 (was 0.5907).
+Run 08 | Both CheMeleon+Chemprop NormAgg | 0.4900 | ADVANCED — Chemprop test 0.5534.
+Run 09 | CheMeleon higher LR (1e-4/5e-4) | 0.5231 | REVERT — low LR critical.
+Run 10 | Ridge stacking meta-learner | 0.4777 | ★ BEST — val-test gap only 0.017. Major structural win.
