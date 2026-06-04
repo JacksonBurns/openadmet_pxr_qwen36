@@ -11,6 +11,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from scipy.optimize import minimize
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
+from lightning.pytorch import seed_everything
 from lightning import pytorch as pl
 from chemprop import data, models, nn
 from chemprop.featurizers import SimpleMoleculeMolGraphFeaturizer
@@ -21,6 +22,7 @@ warnings.filterwarnings("ignore")
 torch.set_num_threads(4)
 
 SEED = 42
+seed_everything(SEED)
 np.random.seed(SEED)
 torch.manual_seed(SEED)
 
