@@ -166,11 +166,11 @@ def train_chemeleon(smis, ys, val_smis, val_ys, batch_size=64,
         n_layers=2,
         dropout=0.2,
     )
-   model = models.MPNN(
+    model = models.MPNN(
         mp,
         nn.NormAggregation(),
         ffn,
-        batch_norm=True,
+        batch_norm=False,
         init_lr=1e-5,
         max_lr=1e-4,
         final_lr=1e-5,
