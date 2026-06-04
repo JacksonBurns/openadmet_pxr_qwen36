@@ -6,6 +6,8 @@ examples
 
 # all csv files (submissions, training data, etc.)
 *.csv
+# ...except the autoresearch progress log
+!results.csv
 
 # experiment outputs
 checkpoints
