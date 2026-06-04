@@ -2,3 +2,5 @@
 Branch: autoresearch/jun3
 Best v1 MAE: 0.4855 (to beat)
 ---
+
+Run 01 | Baseline (experiment.py as-is) | Test MAE 0.5104 | Val 0.4686, test 0.5104 (gap=0.042). CheMeleon val 0.4818, Chemprop val 0.5066. Ensemble weights need investigation — large val-to-test gap suggests overfit in weight optimization or CheMeleon overfit despite hold-out.
