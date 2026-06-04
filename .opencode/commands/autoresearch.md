@@ -38,6 +38,7 @@ You can change which targets are regressed, how you preprocess the molecular str
 **Simplicity criterion**: All else being equal, simpler is better. A small improvement that adds ugly complexity is not worth it. Conversely, removing something and getting equal or better results is a great outcome — that's a simplification win. When evaluating whether to keep a change, weigh the complexity cost against the improvement magnitude. A 0.001 improvement that adds 20 lines of hacky code? Probably not worth it. A 0.001 improvement from deleting code? Definitely keep. An improvement of ~0 but much simpler code? Keep.
 
 **The first run**: Your very first run should always be to establish the baseline, so you will run the training script as is.
+Do not try and find a baseline starting point from the commit history or your context - ALWAYS run the `experiment.py` as is, and use the result as the baseline.
 
 ## Output format
 
