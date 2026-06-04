@@ -271,7 +271,7 @@ def train_chemprop(smis, ys, val_smis, val_ys,
     )
     model = models.MPNN(
         nn.BondMessagePassing(d_h=d_h, depth=depth),
-        nn.MeanAggregation(),
+        nn.NormAggregation(),
         ffn,
         batch_norm=True,
         init_lr=1e-4,
