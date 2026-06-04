@@ -486,10 +486,18 @@ def train_model(model_config, processed_data):
         checkpoint_dir="chemprop_mt", n_tasks=2,
     )
 
-# CheMeleon on full data (Ridge stacking handles generalization)
-    print("  CheMeleon Foundation (full data)...")
+    # CheMeleon with hold-out val to prevent overfitting
+    print("  CheMeleon Foundation (hold-out val)...")
+    holdout_idx = np.arange(len(smis))
+    np.random.seed(SEED + 1)
+    np.random.shuffle(holdout_idx)
+    split_pt = int(0.8 * len(holdout_idx))
+    ch_train_smis = smis[holdout_idx[:split_pt]]
+    ch_train_y = y_pEC50[holdout_idx[:split_pt]]
+    ch_val_smis = smis[holdout_idx[split_pt:]]
+    ch_val_y = y_pEC50[holdout_idx[split_pt:]]
     _, final_ch_trainer, final_ch_cp = train_chemeleon(
-        smis, y_pEC50, smis, y_pEC50,
+        ch_train_smis, ch_train_y, ch_val_smis, ch_val_y,
         checkpoint_dir="chemeleon", n_tasks=1,
     )
 
