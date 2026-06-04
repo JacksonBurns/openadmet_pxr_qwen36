@@ -1,8 +1,2 @@
 Lab notebook for autoresearch/jun4 (started 2026-06-04)
-
-Run 01: Baseline — MAE 0.4947, 837.5s. Val: 0.4650. Test: 0.4947. Gap: 0.03.
-
-Run 02-06: All reverted (XGB stronger, Chemprop LR/patience, Chemprop ST, CheMeleon FFN, grid weights)
-
-Run 07: Ridge alpha 1.0->10.0 (more regularization to close val-test gap)
-  Hypothesis: Ridge overfits val. Stronger reg = better generalization.
+Baseline model: Chemprop MT (pEC50+Emax) + CheMeleon + 4x sklearn (Morgan r1, AtomPair, Torsion, MACCS) with Ridge stacking ensemble.
