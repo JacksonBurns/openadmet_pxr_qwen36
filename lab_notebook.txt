@@ -10,6 +10,15 @@ Run 04 | CheMeleon SumAggregation | 0.5080 | ADVANCED — reduced val-to-test ga
 Run 05 | CheMeleon NormAggregation | 0.4924 | ADVANCED — big gain. CheMeleon test 0.5088.
 Run 06 | AttentiveAggregation | CRASH/0.5023 | REVERT.
 Run 07 | CheMeleon batch_norm=True | 0.5205 | REVERT — batch_norm hurts.
-Run 08 | Both CheMeleon+Chemprop NormAgg | 0.4900 | ADVANCED — Chemprop test 0.5534.
-Run 09 | CheMeleon higher LR (1e-4/5e-4) | 0.5231 | REVERT — low LR critical.
-Run 10 | Ridge stacking meta-learner | 0.4777 | ★ BEST — val-test gap only 0.017. Major structural win.
+Run 08 | Both CheMeleon+Chemprop NormAgg | 0.4900 | ADVANCED.
+Run 09 | CheMeleon higher LR (1e-4/5e-4) | 0.5231 | REVERT.
+Run 10 | Ridge stacking meta-learner | 0.4777 | ★ BEST — val-test gap 0.017.
+Run 11 | Ridge alpha=0.1 | 0.4974 | REVERT.
+Run 12 | Ridge alpha=10 | 0.4799 | REVERT — alpha=1 optimal.
+Run 13 | CheMeleon 3-layer FFN | 0.4955 | REVERT — overfit.
+Run 14 | CheMeleon FFN hidden=1024 | 0.4942 | REVERT — underfit.
+Run 15 | ElasticNet stacking | 0.5020 | REVERT — Ridge better.
+Run 16 | CheMeleon patience=25 | 0.4935 | REVERT.
+Run 17 | Drop sklearn (Che+Chemprop only) | 0.5129 | REVERT — diversity matters.
+Run 18 | CheMeleon dropout=0.1 | 0.5168 | REVERT.
+[PLATEAU: 8 consecutive reverts. Need structural leap.]
