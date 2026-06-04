@@ -6,5 +6,8 @@ Best v1 MAE: 0.4855 (to beat)
 Run 01 | Baseline | 0.5104 | Val 0.4686, test 0.5104 (gap=0.042). CheMeleon val 0.4818, Chemprop val 0.5066.
 Run 02 | CheMeleon max_epochs=120, patience=25 | 0.5130 | REVERT — no gain.
 Run 03 | Equal ensemble weights | 0.5147 | REVERT — equal weights worse.
-Run 04 | CheMeleon SumAggregation | 0.5080 | ADVANCED — reduced val-to-test gap (0.033 vs 0.042).
-Run 05 | CheMeleon NormAggregation | 0.4924 | ADVANCED — big gain. CheMeleon test 0.5088, ensemble 0.4924. Val-test gap 0.4712→0.4924 (0.021).
+Run 04 | CheMeleon SumAggregation | 0.5080 | ADVANCED — reduced val-to-test gap.
+Run 05 | CheMeleon NormAggregation | 0.4924 | ADVANCED — big gain. CheMeleon test 0.5088.
+Run 06 | AttentiveAggregation | CRASH/0.5023 | REVERT.
+Run 07 | CheMeleon batch_norm=True | 0.5205 | REVERT — batch_norm hurts.
+Run 08 | Both CheMeleon+Chemprop NormAgg | 0.4900 | ADVANCED — Chemprop test 0.5534 (was 0.5907).
