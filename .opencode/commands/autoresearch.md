@@ -41,10 +41,10 @@ You can change which targets are regressed, how you preprocess the molecular str
 
 ## Output format
 
-Once the script finishes it writes to a file called `results.csv` that looks like this:
+Once the script finishes it writes to a file called `results.csv` that looks like this (this is just an example, do not actually use these numbers):
 
 ```
-Timestamp,MAE,Time
+Timestamp,MAE,Execution Time
 2026-06-03 23:32:26,0.5105,1079.5s
 2026-06-04 01:06:24,0.4923,1072.9s
 2026-06-04 01:26:50,"CRASH (AttentiveAggregation.__init__() missing 1 required keyword-only argument: 'output_size')",54.8s
