@@ -163,7 +163,7 @@ def train_chemeleon(smis, ys, val_smis, val_ys, batch_size=64,
         n_tasks=n_tasks,
         output_transform=output_transform,
         input_dim=mp.output_dim,
-        hidden_dim=mp.output_dim,
+        hidden_dim=512,
         n_layers=2,
         dropout=0.2,
     )
