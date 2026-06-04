@@ -438,6 +438,14 @@ def train_model(model_config, processed_data):
     )
     print(f"    MAE (pEC50): {mean_absolute_error(val_pec50, ch_preds):.4f}")
 
+    # Second CheMeleon (different seed for diversity)
+    print("\n  CheMeleon Foundation (seed 2)...")
+    ch_preds2, _, _ = train_chemeleon(
+        train_smis, train_pec50, val_smis, val_pec50,
+        checkpoint_dir="chemeleon2", n_tasks=1,
+    )
+    print(f"    MAE (pEC50): {mean_absolute_error(val_pec50, ch_preds2):.4f}")
+
     # Sklearn with diverse fingerprints
     sk_trained = {}
     sk_preds_dict = {}
@@ -463,6 +471,7 @@ def train_model(model_config, processed_data):
     all_val_preds = {
         "chemprop_mt": mt_pec50,
         "chemeleon": ch_preds,
+        "chemeleon2": ch_preds2,
     }
     all_val_preds.update(sk_preds_dict)
 
@@ -501,6 +510,21 @@ def train_model(model_config, processed_data):
         checkpoint_dir="chemeleon", n_tasks=1,
     )
 
+    # Second CheMeleon (different seed for diversity)
+    print("  CheMeleon Foundation (seed 2, hold-out val)...")
+    np.random.seed(SEED + 2)
+    holdout_idx2 = np.arange(len(smis))
+    np.random.shuffle(holdout_idx2)
+    split_pt2 = int(0.8 * len(holdout_idx2))
+    ch2_train_smis = smis[holdout_idx2[:split_pt2]]
+    ch2_train_y = y_pEC50[holdout_idx2[:split_pt2]]
+    ch2_val_smis = smis[holdout_idx2[split_pt2:]]
+    ch2_val_y = y_pEC50[holdout_idx2[split_pt2:]]
+    _, final_ch2_trainer, final_ch2_cp = train_chemeleon(
+        ch2_train_smis, ch2_train_y, ch2_val_smis, ch2_val_y,
+        checkpoint_dir="chemeleon2", n_tasks=1,
+    )
+
     # Sklearn on full data (all fingerprint types)
     sklearn_finals = {}
     for name, (trained, fp_fn) in sk_trained.items():
@@ -518,6 +542,8 @@ def train_model(model_config, processed_data):
         "chemprop_mt_cp": final_mt_cp,
         "chemeleon_trainer": final_ch_trainer,
         "chemeleon_cp": final_ch_cp,
+        "chemeleon2_trainer": final_ch2_trainer,
+        "chemeleon2_cp": final_ch2_cp,
         "sklearn_finals": sklearn_finals,
         "ensemble_weights": ensemble_weights,
         "ensemble_mae": ensemble_mae,
@@ -550,6 +576,14 @@ def evaluate_model(model, test=None):
     ch_preds = torch.cat(ch_preds, dim=0).cpu().numpy().ravel()
     print(f"  CheMeleon: [{ch_preds.min():.2f}, {ch_preds.max():.2f}]")
 
+    # CheMeleon 2
+    ch2_preds = model["chemeleon2_trainer"].predict(
+        model["chemeleon2_trainer"].lightning_module, ch_test_loader,
+        ckpt_path=model["chemeleon2_cp"].best_model_path)
+    ch2_preds = torch.cat(ch2_preds, dim=0).cpu().numpy().ravel()
+    print(f"  CheMeleon2: [{ch2_preds.min():.2f}, {ch2_preds.max():.2f}]")
+    print(f"  CheMeleon: [{ch_preds.min():.2f}, {ch_preds.max():.2f}]")
+
      # Sklearn at multiple fingerprint types
     sk_test_preds = {}
     for name, (model_inst, scaler, fp_fn) in model["sklearn_finals"].items():
@@ -561,6 +595,7 @@ def evaluate_model(model, test=None):
     all_preds = {
         "chemprop_mt": chemprop_mt_pred,
         "chemeleon": ch_preds,
+        "chemeleon2": ch2_preds,
     }
     all_preds.update(sk_test_preds)
 
