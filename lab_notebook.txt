@@ -1,12 +1,10 @@
-# Lab Notebook — autoresearch/jun2
-# Started: 2026-06-02
+# Lab Notebook — Autoresearch v2 (jun3)
 
-**Best: MAE 0.4855** | CheMeleon hold-out 20%, low LR, dropout 0.2, 4 fp types, weighted ensemble.
+## Setup
+- Branch: autoresearch/jun3
+- Target: beat v1 best MAE of 0.4855
+- v1 key finding: 11 consecutive failures at plateau. 11 critical bug in current code: line 574-575 uses hardcoded simple 1/3 average instead of optimized ensemble weights.
 
-Run 01 | Baseline | MAE: 0.5572
-Run 05-07 | Diverse fp + MACCS | MAE: 0.5066
-Run 14 | CheMeleon v2 (10% hold-out) | MAE: 0.4939
-Run 21 | CheMeleon hold-out 20% | MAE: 0.4855 ★ BEST
-Run 22-32 | 11 consecutive CheMeleon variants | REVERTED (30% hold-out, 3-FFN, small-FFN, diversity, grad-clip, frozen-mp, bs128, second-che, 3-seeds, smaller-chemprop, che-only)
-
-PLATEAU: 11 failures. Best config stable at 0.4855. Ensemble critical (dropping it → 0.5261).
+## Experiment Log
+| Run | Change | MAE | Result | Notes |
+|-----|--------|-----|--------|-------|
