@@ -9,7 +9,7 @@ To set up a new experiment, work with the user to:
 1. **Agree on a run tag**: propose a tag based on today's date (e.g. `mar5`). The branch `autoresearch/<tag>` must not already exist — this is a fresh run.
 2. **Create the branch**: `git checkout -b autoresearch/<tag>` from current master.
 3. **Read the in-scope files**: The repo is small. Read these files for full context:
-   - `README.md` — repository context.
+   - `README.md` — repository context, including the description of the challenge.
    - `examples/` - example code for using the various machine learning tools available to you
    - `train.py` — the file you modify. Model architecture, optimizer, training loop.
 4. **Initialize lab_notebook.txt**: Create `lab_notebook.txt`.
@@ -22,7 +22,9 @@ Once you get confirmation, kick off the experimentation.
 You will launch the experiment by simply running `python experiment.py`.
 
 **What you CAN do:**
-- Modify `experiment.py` — this is the only file you edit. Everything is fair game: model architecture, optimizer, hyperparameters, training loop, batch size, model size, etc.
+- Modify `experiment.py` — this is the only file you edit.
+Everything is fair game: model architecture, optimizer, hyperparameters, training loop, batch size, model size, etc.
+You can change which targets are regressed, how you preprocess the molecular structures, which data you use, how you split, anything related to the process of delivering the machine learning model.
 
 **What you CANNOT do:**
 - Modify other files: only modify `experiment.py`, other files are irrelevant to you.
@@ -42,8 +44,10 @@ You will launch the experiment by simply running `python experiment.py`.
 Once the script finishes it writes to a file called `results.csv` that looks like this:
 
 ```
-Timestamp,MAE
-2026-06-02 12:56:05,0.55
+Timestamp,MAE,Time
+2026-06-03 23:32:26,0.5104031213952225,1079.5s
+2026-06-04 01:06:24,0.49239876566505525,1072.9s
+2026-06-04 01:26:50,"CRASH (AttentiveAggregation.__init__() missing 1 required keyword-only argument: 'output_size')",54.8s
 ```
 
 The MAE for the most recent execution will be on the last line (`tail` and `grep`, for example, can retrieve it).
@@ -77,6 +81,13 @@ To maintain diversity, mentally categorize each experiment as one of:
 - **Simplification**: removing components, reducing complexity for equal or better results
 
 Avoid running more than 3 experiments in the same category in a row. If you've been tuning LR for 3 runs, switch to an architecture change. Diversity of exploration beats depth of exploitation in the early/mid phase.
+
+## Prior Knowledge
+
+Below are some observations from previous iterations of research, which you should incorporate into your design:
+
+ - The CheMeleon foundation model is a strong model which should always be incorporated into the ensemble
+ - Random SMILES augmentation has no impact on model performance, since neither fingerprint nor Chemprop act on the SMILES directly
 
 ## The experiment loop
 

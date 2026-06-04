@@ -22,17 +22,15 @@ warnings.filterwarnings("ignore")
 torch.set_num_threads(4)
 
 SEED = 42
-seed_everything(SEED)
-np.random.seed(SEED)
-torch.manual_seed(SEED)
-
 
 # ============================================================================
 # DATA LOADING AND PREPROCESSING
 # ============================================================================
 
 def load_data():
-    train = pd.read_csv("train.csv", low_memory=False)
+    # for the sake of being able to optimize in a reasonable amount of time,
+    # we only use a subsample of the data
+    train = pd.read_csv("train_sample.csv", low_memory=False)
     test = pd.read_csv("test_phase1.csv")
     return train, test
 
@@ -201,6 +199,7 @@ def train_chemeleon(smis, ys, val_smis, val_ys, batch_size=64,
         logger=False,
         enable_progress_bar=False,
         enable_model_summary=False,
+        deterministic=True,  # <-- REPRODUCIBILITY, REQUIRED!
     )
 
     trainer.fit(model, train_loader, val_loader)
@@ -304,6 +303,7 @@ def train_chemprop(smis, ys, val_smis, val_ys,
         logger=False,
         enable_progress_bar=False,
         enable_model_summary=False,
+        deterministic=True,  # <-- REPRODUCIBILITY, REQUIRED!
     )
 
     trainer.fit(model, train_loader, val_loader)
@@ -367,7 +367,7 @@ def optimize_ensemble_weights(val_preds_dict, y_val):
     X_meta = np.column_stack([val_preds_dict[name] for name in names])
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X_meta)
-    meta = Ridge(alpha=1.0)
+    meta = Ridge(alpha=1.0, random_state=SEED)
     meta.fit(X_scaled, y_val)
     coefs = meta.coef_
     weights = np.abs(coefs)
@@ -618,6 +618,14 @@ if __name__ == "__main__":
     from datetime import datetime
     from pathlib import Path
 
+    ### IMPORTANT ###
+    # Runs MUST be reproducible in order to get a good signal for optimization
+    # the below controls the random seed for Python, numpy, and pytorch
+    # WHENEVER you initialize an sklearn model or do a train/val split, make
+    # sure to set random_state=SEED
+    seed_everything(SEED, workers=True)
+    # --------------
+
     outfile = Path("results.csv")
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if not outfile.exists():
@@ -635,7 +643,7 @@ if __name__ == "__main__":
     except Exception as e:
         import traceback
         traceback.print_exc()
-        mae = f"CRASH ({e})"
+        mae = f"\"CRASH ({e})\""
     finally:
         # Safely delete checkpoints regardless of script success/failure
         if os.path.exists("checkpoints"):

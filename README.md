@@ -36,7 +36,11 @@ Hit expansion targeted compounds with EC50 ≤ 1 µM and at least 1.5 log-unit d
 
 ## Setup
 
-TODO: LLM config, opencode, separate section saying 'Install `chemprop molpipeline scikit-learn`'
+This setup is configured to use an LLM via `opencode`.
+
+`opencode` supports arbitrary LLM's, but I am running `Qwen 3.6 27B` locally via `llama.cpp`.
+
+For code dependencies, you will need `chemprop`, `molpipeline`, and `scikit-learn`.
 
 ## Baseline
 

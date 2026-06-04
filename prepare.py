@@ -46,4 +46,5 @@ if __name__ == "__main__":
         renamed_dfs
     )
 
-    merged.to_csv("train.csv", index=False)
+    merged.sample(frac=0.1, random_state=42).to_csv("train_sample.csv", index=False)
+    merged.to_csv("train_full.csv", index=False)
