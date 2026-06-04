@@ -73,6 +73,7 @@ def prepare_primary_data(train_df):
 
     primary_clean = primary_clean[
         (primary_clean["pEC50"] >= 1.5) & (primary_clean["pEC50"] <= 8.0)
+        & (primary_clean["std_error"] <= 0.25)
     ].reset_index(drop=True)
 
     return primary_clean
