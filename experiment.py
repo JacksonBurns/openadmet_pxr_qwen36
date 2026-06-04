@@ -365,7 +365,7 @@ def optimize_ensemble_weights(val_preds_dict, y_val):
     X_meta = np.column_stack([val_preds_dict[name] for name in names])
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X_meta)
-    meta = Ridge(alpha=1.0)
+    meta = Ridge(alpha=10.0)
     meta.fit(X_scaled, y_val)
     coefs = meta.coef_
     weights = np.abs(coefs)
