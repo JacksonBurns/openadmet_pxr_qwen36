@@ -340,10 +340,11 @@ def train_sklearn_model(X_train, y_train, X_val, y_val):
     X_val_sc = scaler.transform(X_val)
 
     model = XGBRegressor(
-        n_estimators=500, 
-        max_depth=5, 
-        learning_rate=0.05,
+        n_estimators=2000, 
+        max_depth=7, 
+        learning_rate=0.03,
         subsample=0.8, 
+        colsample_bytree=0.8,
         random_state=SEED,
         tree_method="hist", 
         device="cuda",
@@ -426,7 +427,7 @@ def train_model(model_config, processed_data):
     val_mt = np.column_stack([val_pec50, val_Emax])
     mt_preds, _, _ = train_chemprop(
         train_smis, train_mt, val_smis, val_mt,
-        d_h=512, depth=5, n_layers=2, hidden_dim=512,
+        d_h=512, depth=6, n_layers=2, hidden_dim=512,
         checkpoint_dir="chemprop_mt", n_tasks=2,
     )
     mt_pec50 = mt_preds[:, 0]
@@ -484,7 +485,7 @@ def train_model(model_config, processed_data):
     print("  Chemprop MT...")
     _, final_mt_trainer, final_mt_cp = train_chemprop(
         smis, full_targets_mt, smis, full_targets_mt,
-        d_h=512, depth=5, n_layers=2, hidden_dim=512,
+        d_h=512, depth=6, n_layers=2, hidden_dim=512,
         checkpoint_dir="chemprop_mt", n_tasks=2,
     )
 
