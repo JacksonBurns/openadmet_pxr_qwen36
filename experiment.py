@@ -165,7 +165,7 @@ def train_chemeleon(smis, ys, val_smis, val_ys, batch_size=64,
         input_dim=mp.output_dim,
         hidden_dim=mp.output_dim,
         n_layers=2,
-        dropout=0.1,
+        dropout=0.2,
     )
     model = models.MPNN(
         mp,
