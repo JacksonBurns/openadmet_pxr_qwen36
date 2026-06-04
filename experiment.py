@@ -1,10 +1,11 @@
 import os
 import shutil
 import warnings
+from joblib import Parallel, delayed
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.ensemble import GradientBoostingRegressor
+from xgboost import XGBRegressor
 from sklearn.linear_model import Ridge
 from sklearn.metrics import mean_absolute_error
 from sklearn.model_selection import train_test_split
@@ -14,12 +15,11 @@ from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from lightning.pytorch import seed_everything
 from lightning import pytorch as pl
 from chemprop import data, models, nn
-from chemprop.featurizers import SimpleMoleculeMolGraphFeaturizer
+from chemprop.featurizers import CuikmolmakerMolGraphFeaturizer
 from rdkit import Chem
 from rdkit.Chem import rdFingerprintGenerator
 
 warnings.filterwarnings("ignore")
-torch.set_num_threads(4)
 
 SEED = 42
 
@@ -28,9 +28,7 @@ SEED = 42
 # ============================================================================
 
 def load_data():
-    # for the sake of being able to optimize in a reasonable amount of time,
-    # we only use a subsample of the data
-    train = pd.read_csv("train_sample.csv", low_memory=False)
+    train = pd.read_csv("train.csv", low_memory=False)
     test = pd.read_csv("test_phase1.csv")
     return train, test
 
@@ -84,45 +82,59 @@ def prepare_primary_data(train_df):
 # MOLECULAR FINGERPRINTING (RDKit)
 # ============================================================================
 
-def compute_morgan_fps(smis, radius=2, n_bits=2048):
-    """Compute Morgan fingerprints using RDKit's modern API."""
-    gen = rdFingerprintGenerator.GetMorganGenerator(radius=radius, fpSize=n_bits)
-    fps = []
-    for s in smis:
+def compute_morgan_fps(smis, radius=2, n_bits=2048, n_jobs=-1):
+    def _get_fp(s):
+        # Instantiate inside the worker to avoid pickling the C++ object
+        gen = rdFingerprintGenerator.GetMorganGenerator(radius=radius, fpSize=n_bits)
         mol = Chem.MolFromSmiles(s)
         if mol is None:
-            fps.append(np.zeros(n_bits, dtype=np.float32))
-            continue
-        fp = gen.GetFingerprintAsNumPy(mol)
-        fps.append(fp.astype(np.float32))
+            return np.zeros(n_bits, dtype=np.float32)
+        return gen.GetFingerprintAsNumPy(mol).astype(np.float32)
+        
+    fps = Parallel(n_jobs=n_jobs)(delayed(_get_fp)(s) for s in smis)
     return np.array(fps)
 
 
-def compute_atompair_fps(smis, n_bits=2048):
-    """Compute Atom Pair fingerprints."""
-    gen = rdFingerprintGenerator.GetAtomPairGenerator(fpSize=n_bits)
-    fps = []
-    for s in smis:
+def compute_atompair_fps(smis, n_bits=2048, n_jobs=-1):
+    def _get_fp(s):
+        # Instantiate inside the worker
+        gen = rdFingerprintGenerator.GetAtomPairGenerator(fpSize=n_bits)
         mol = Chem.MolFromSmiles(s)
         if mol is None:
-            fps.append(np.zeros(n_bits, dtype=np.float32))
-            continue
-        fp = gen.GetFingerprintAsNumPy(mol)
-        fps.append(fp.astype(np.float32))
+            return np.zeros(n_bits, dtype=np.float32)
+        return gen.GetFingerprintAsNumPy(mol).astype(np.float32)
+        
+    fps = Parallel(n_jobs=n_jobs)(delayed(_get_fp)(s) for s in smis)
     return np.array(fps)
 
 
-def compute_torsion_fps(smis, n_bits=2048):
-    """Compute Topological Torsion fingerprints."""
-    gen = rdFingerprintGenerator.GetTopologicalTorsionGenerator(fpSize=n_bits)
-    fps = []
-    for s in smis:
+def compute_torsion_fps(smis, n_bits=2048, n_jobs=-1):
+    def _get_fp(s):
+        # Instantiate inside the worker
+        gen = rdFingerprintGenerator.GetTopologicalTorsionGenerator(fpSize=n_bits)
         mol = Chem.MolFromSmiles(s)
         if mol is None:
-            fps.append(np.zeros(n_bits, dtype=np.float32))
-            continue
-        fp = gen.GetFingerprintAsNumPy(mol)
-        fps.append(fp.astype(np.float32))
+            return np.zeros(n_bits, dtype=np.float32)
+        return gen.GetFingerprintAsNumPy(mol).astype(np.float32)
+        
+    fps = Parallel(n_jobs=n_jobs)(delayed(_get_fp)(s) for s in smis)
+    return np.array(fps)
+
+def compute_maccs_fps(smis, n_jobs=-1):
+    """Compute MACCS keys fingerprints (167-bit) in parallel."""
+    from rdkit.Chem import MACCSkeys
+    
+    def _get_fp(s):
+        mol = Chem.MolFromSmiles(s)
+        if mol is None:
+            return np.zeros(167, dtype=np.float32)
+        fp = MACCSkeys.GenMACCSKeys(mol)
+        arr = np.zeros(167, dtype=np.float32)
+        for bit in fp.GetOnBits():
+            arr[bit] = 1.0
+        return arr
+        
+    fps = Parallel(n_jobs=n_jobs)(delayed(_get_fp)(s) for s in smis)
     return np.array(fps)
 
 
@@ -136,27 +148,27 @@ def train_chemeleon(smis, ys, val_smis, val_ys, batch_size=64,
     if val_ys.ndim == 1:
         val_ys = val_ys.reshape(-1, 1)
 
-    featurizer = SimpleMoleculeMolGraphFeaturizer()
+    featurizer = CuikmolmakerMolGraphFeaturizer()
     chemeleon_mp = pt.load("chemeleon_mp.pt", weights_only=True)
     mp = nn.BondMessagePassing(**chemeleon_mp['hyper_parameters'])
     mp.load_state_dict(chemeleon_mp['state_dict'])
 
     train_data = [
-        data.MoleculeDatapoint.from_smi(s, y.tolist() if hasattr(y, 'tolist') else [y])
+        data.LazyMoleculeDatapoint(s, y=y.tolist() if hasattr(y, 'tolist') else [y])
         for s, y in zip(smis, ys)
     ]
     val_data = [
-        data.MoleculeDatapoint.from_smi(s, y.tolist() if hasattr(y, 'tolist') else [y])
+        data.LazyMoleculeDatapoint(s, y=y.tolist() if hasattr(y, 'tolist') else [y])
         for s, y in zip(val_smis, val_ys)
     ]
 
-    train_dset = data.MoleculeDataset(train_data, featurizer)
+    train_dset = data.CuikmolmakerDataset(train_data, featurizer)
     output_scaler = train_dset.normalize_targets()
-    val_dset = data.MoleculeDataset(val_data, featurizer)
+    val_dset = data.CuikmolmakerDataset(val_data, featurizer)
     val_dset.normalize_targets(output_scaler)
 
-    train_loader = data.build_dataloader(train_dset, batch_size=batch_size)
-    val_loader = data.build_dataloader(val_dset, batch_size=batch_size, shuffle=False)
+    train_loader = data.build_dataloader(train_dset, batch_size=batch_size, num_workers=2, persistent_workers=True)
+    val_loader = data.build_dataloader(val_dset, batch_size=batch_size, shuffle=False, num_workers=2, persistent_workers=True)
 
     output_transform = nn.transforms.UnscaleTransform.from_standard_scaler(output_scaler)
     ffn = nn.RegressionFFN(
@@ -214,23 +226,6 @@ def train_chemeleon(smis, ys, val_smis, val_ys, batch_size=64,
     return preds, trainer, checkpoint_cb
 
 
-def compute_maccs_fps(smis):
-    """Compute MACCS keys fingerprints (167-bit structural keys)."""
-    from rdkit.Chem import MACCSkeys
-    fps = []
-    for s in smis:
-        mol = Chem.MolFromSmiles(s)
-        if mol is None:
-            fps.append(np.zeros(167, dtype=np.float32))
-            continue
-        fp = MACCSkeys.GenMACCSKeys(mol)
-        arr = np.zeros(167, dtype=np.float32)
-        for bit in fp.GetOnBits():
-            arr[bit] = 1.0
-        fps.append(arr)
-    return np.array(fps)
-
-
 # ============================================================================
 # CHEMPROP MPNN MODEL
 # ============================================================================
@@ -246,21 +241,21 @@ def train_chemprop(smis, ys, val_smis, val_ys,
         val_ys = val_ys.reshape(-1, 1)
 
     train_data = [
-        data.MoleculeDatapoint.from_smi(s, y.tolist() if hasattr(y, 'tolist') else [y])
+        data.LazyMoleculeDatapoint(s, y=y.tolist() if hasattr(y, 'tolist') else [y])
         for s, y in zip(smis, ys)
     ]
     val_data = [
-        data.MoleculeDatapoint.from_smi(s, y.tolist() if hasattr(y, 'tolist') else [y])
+        data.LazyMoleculeDatapoint(s, y=y.tolist() if hasattr(y, 'tolist') else [y])
         for s, y in zip(val_smis, val_ys)
     ]
 
-    train_dset = data.MoleculeDataset(train_data)
+    train_dset = data.CuikmolmakerDataset(train_data)
     output_scaler = train_dset.normalize_targets()
-    val_dset = data.MoleculeDataset(val_data)
+    val_dset = data.CuikmolmakerDataset(val_data)
     val_dset.normalize_targets(output_scaler)
 
-    train_loader = data.build_dataloader(train_dset, batch_size=batch_size)
-    val_loader = data.build_dataloader(val_dset, batch_size=batch_size, shuffle=False)
+    train_loader = data.build_dataloader(train_dset, batch_size=batch_size, num_workers=2, persistent_workers=True)
+    val_loader = data.build_dataloader(val_dset, batch_size=batch_size, shuffle=False, num_workers=2, persistent_workers=True)
 
     output_transform = nn.transforms.UnscaleTransform.from_standard_scaler(output_scaler)
     ffn = nn.RegressionFFN(
@@ -321,9 +316,9 @@ def train_chemprop(smis, ys, val_smis, val_ys,
 
 def predict_chemprop(trainer, checkpoint_path, test_smiles, n_tasks=2):
     """Get predictions from a trained chemprop model."""
-    test_data = [data.MoleculeDatapoint.from_smi(s) for s in test_smiles]
-    test_dset = data.MoleculeDataset(test_data)
-    test_loader = data.build_dataloader(test_dset, batch_size=64, shuffle=False)
+    test_data = [data.LazyMoleculeDatapoint(s) for s in test_smiles]
+    test_dset = data.CuikmolmakerDataset(test_data)
+    test_loader = data.build_dataloader(test_dset, batch_size=64, shuffle=False, num_workers=2, persistent_workers=True)
 
     preds = trainer.predict(trainer.lightning_module, test_loader,
                              ckpt_path=checkpoint_path)
@@ -344,9 +339,14 @@ def train_sklearn_model(X_train, y_train, X_val, y_val):
     X_train_sc = scaler.fit_transform(X_train)
     X_val_sc = scaler.transform(X_val)
 
-    model = GradientBoostingRegressor(
-        n_estimators=500, max_depth=5, learning_rate=0.05,
-        subsample=0.8, min_samples_leaf=10, random_state=SEED,
+    model = XGBRegressor(
+        n_estimators=500, 
+        max_depth=5, 
+        learning_rate=0.05,
+        subsample=0.8, 
+        random_state=SEED,
+        tree_method="hist", 
+        device="cuda",
     )
 
     model.fit(X_train_sc, y_train)
@@ -543,9 +543,9 @@ def evaluate_model(model, test=None):
     )[:, 0]
 
     # CheMeleon
-    ch_test_data = [data.MoleculeDatapoint.from_smi(s) for s in test_smiles]
-    ch_test_dset = data.MoleculeDataset(ch_test_data, SimpleMoleculeMolGraphFeaturizer())
-    ch_test_loader = data.build_dataloader(ch_test_dset, batch_size=64, shuffle=False)
+    ch_test_data = [data.LazyMoleculeDatapoint(s) for s in test_smiles]
+    ch_test_dset = data.CuikmolmakerDataset(ch_test_data, CuikmolmakerMolGraphFeaturizer())
+    ch_test_loader = data.build_dataloader(ch_test_dset, batch_size=64, shuffle=False, num_workers=2, persistent_workers=True)
     ch_preds = model["chemeleon_trainer"].predict(
         model["chemeleon_trainer"].lightning_module, ch_test_loader,
         ckpt_path=model["chemeleon_cp"].best_model_path)
@@ -630,7 +630,7 @@ if __name__ == "__main__":
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if not outfile.exists():
         with open(outfile, "w") as f:
-            f.write("Timestamp,MAE\n")
+            f.write("Timestamp,MAE,Execution Time\n")
 
     start_time = datetime.now()
 
@@ -639,7 +639,7 @@ if __name__ == "__main__":
         processed = preprocess_data(*raw_data)
         model = configure_model()
         model = train_model(model, processed)
-        mae = evaluate_model(model)
+        mae = f"{evaluate_model(model):.4f}"
     except Exception as e:
         import traceback
         traceback.print_exc()

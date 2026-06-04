@@ -40,7 +40,7 @@ This setup is configured to use an LLM via `opencode`.
 
 `opencode` supports arbitrary LLM's, but I am running `Qwen 3.6 27B` locally via `llama.cpp`.
 
-For code dependencies, you will need `chemprop`, `molpipeline`, and `scikit-learn`.
+For code dependencies, you will need `chemprop`, `molpipeline`, `xgboost`, and `scikit-learn`.
 
 ## Baseline
 

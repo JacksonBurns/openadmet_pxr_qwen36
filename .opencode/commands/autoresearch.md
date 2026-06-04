@@ -11,7 +11,7 @@ To set up a new experiment, work with the user to:
 3. **Read the in-scope files**: The repo is small. Read these files for full context:
    - `README.md` — repository context, including the description of the challenge.
    - `examples/` - example code for using the various machine learning tools available to you
-   - `train.py` — the file you modify. Model architecture, optimizer, training loop.
+   - `experiment.py` — the file you modify. Model architecture, optimizer, training loop.
 4. **Initialize lab_notebook.txt**: Create `lab_notebook.txt`.
 5. **Confirm and go**: Confirm setup looks good.
 
@@ -28,7 +28,7 @@ You can change which targets are regressed, how you preprocess the molecular str
 
 **What you CANNOT do:**
 - Modify other files: only modify `experiment.py`, other files are irrelevant to you.
-- Install new packages or add dependencies: you can only use `molpipeline`, `chemprop`, and `scikit-learn`.
+- Install new packages or add dependencies: you can only use `molpipeline`, `chemprop`, `xgboost`, and `scikit-learn`.
 - Modify the evaluation data: the evaluation data is static - do not change, and do not use it for training or validation, only testing of your models.
 
 **The goal is simple: get the lowest evaluation MAE.** Everything is fair game: change the architecture, the optimizer, the hyperparameters, the batch size, the model size. The only constraint is that the code runs without crashing.
@@ -45,8 +45,8 @@ Once the script finishes it writes to a file called `results.csv` that looks lik
 
 ```
 Timestamp,MAE,Time
-2026-06-03 23:32:26,0.5104031213952225,1079.5s
-2026-06-04 01:06:24,0.49239876566505525,1072.9s
+2026-06-03 23:32:26,0.5105,1079.5s
+2026-06-04 01:06:24,0.4923,1072.9s
 2026-06-04 01:26:50,"CRASH (AttentiveAggregation.__init__() missing 1 required keyword-only argument: 'output_size')",54.8s
 ```
 
@@ -67,7 +67,7 @@ Track your recent improvement rate. If your last 5 consecutive experiments all f
 
 - **Stop tuning hyperparameters.** More LR/batch-size/warmup sweeps will not help.
 - **Make a structural change.** This means changing the model architecture itself: different attention mechanism, different normalization, different positional encoding, adding/removing layers, changing the optimizer algorithm, etc.
-- **Try something you haven't tried before.** Re-read `train.py` from scratch for new angles. Consult the comments and references in the code for ideas from the literature.
+- **Try something you haven't tried before.** Re-read `experiment.py` from scratch for new angles. Consult the comments and references in the code for ideas from the literature.
 
 The pattern is: early experiments should explore broadly across categories, middle experiments can tune what works, and when you plateau you must escape via a structural leap.
 
