@@ -491,7 +491,7 @@ def train_model(model_config, processed_data):
     holdout_idx = np.arange(len(smis))
     np.random.seed(SEED + 1)
     np.random.shuffle(holdout_idx)
-    split_pt = int(0.8 * len(holdout_idx))
+    split_pt = int(0.85 * len(holdout_idx))
     ch_train_smis = smis[holdout_idx[:split_pt]]
     ch_train_y = y_pEC50[holdout_idx[:split_pt]]
     ch_val_smis = smis[holdout_idx[split_pt:]]
