@@ -126,7 +126,7 @@ def compute_torsion_fps(smis, n_bits=2048):
     return np.array(fps)
 
 
-def train_chemeleon(smis, ys, val_smis, val_ys, batch_size=128,
+def train_chemeleon(smis, ys, val_smis, val_ys, batch_size=64,
                     max_epochs=80, checkpoint_dir="chemeleon", n_tasks=1):
     """Finetune CheMeleon foundation model for regression."""
     import torch as pt
