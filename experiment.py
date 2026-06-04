@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import torch
 from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.linear_model import Ridge
 from sklearn.metrics import mean_absolute_error
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
@@ -358,30 +359,22 @@ def train_sklearn_model(X_train, y_train, X_val, y_val):
 # ============================================================================
 
 def optimize_ensemble_weights(val_preds_dict, y_val):
-    """Find optimal non-negative weights minimizing MAE."""
+    """Ridge stacking meta-learner on top model predictions."""
     names = sorted(val_preds_dict.keys())
     n_models = len(names)
-
-    def objective(weights):
-        pred = np.zeros(len(y_val))
-        for w, name in zip(weights, names):
-            pred += max(w, 0) * val_preds_dict[name]
-        total = max(sum(max(w, 0) for w in weights), 1e-10)
-        pred /= total
-        return mean_absolute_error(y_val, pred)
-
-    init = np.ones(n_models) / n_models
-    bounds = [(0.0, 1.0) for _ in range(n_models)]
-    result = minimize(objective, init, method="L-BFGS-B", bounds=bounds)
-
-    optimal_weights = result.x
-    total = max(optimal_weights.sum(), 1e-10)
-    optimal_weights = optimal_weights / total
-
-    best_pred = sum(w * val_preds_dict[name] for w, name in zip(optimal_weights, names))
-    best_mae = mean_absolute_error(y_val, best_pred)
-
-    return dict(zip(names, optimal_weights)), best_mae
+    X_meta = np.column_stack([val_preds_dict[name] for name in names])
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X_meta)
+    meta = Ridge(alpha=1.0)
+    meta.fit(X_scaled, y_val)
+    coefs = meta.coef_
+    weights = np.abs(coefs)
+    total = weights.sum()
+    weights = weights / total if total > 0 else np.ones(n_models) / n_models
+    weight_dict = dict(zip(names, weights))
+    pred = meta.predict(X_scaled)
+    best_mae = mean_absolute_error(y_val, pred)
+    return weight_dict, best_mae
 
 
 # ============================================================================
