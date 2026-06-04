@@ -159,7 +159,7 @@ def train_chemeleon(smis, ys, val_smis, val_ys, batch_size=64,
     val_loader = data.build_dataloader(val_dset, batch_size=batch_size, shuffle=False)
 
     output_transform = nn.transforms.UnscaleTransform.from_standard_scaler(output_scaler)
-  ffn = nn.RegressionFFN(
+    ffn = nn.RegressionFFN(
         n_tasks=n_tasks,
         output_transform=output_transform,
         input_dim=mp.output_dim,
