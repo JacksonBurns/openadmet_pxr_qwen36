@@ -378,7 +378,7 @@ def train_sklearn_model(X_train, y_train, X_val, y_val):
     X_val_sc = scaler.transform(X_val)
 
     model = XGBRegressor(
-        n_estimators=1000, 
+        n_estimators=500, 
         max_depth=5, 
         learning_rate=0.05,
         subsample=0.8, 
