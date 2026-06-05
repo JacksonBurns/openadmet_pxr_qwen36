@@ -444,13 +444,14 @@ def train_model(model_config, processed_data):
     sk_trained = {}
     sk_preds_dict = {}
     fp_configs = [
-        ("r1", lambda s: compute_morgan_fps(s, radius=1, n_bits=2048)),
-        ("ap", lambda s: compute_atompair_fps(s, n_bits=2048)),
-        ("tt", lambda s: compute_torsion_fps(s, n_bits=2048)),
-        ("maccs", compute_maccs_fps),
+        ("concat", lambda s: np.hstack([
+            compute_morgan_fps(s, radius=1, n_bits=2048),
+            compute_atompair_fps(s, n_bits=2048),
+            compute_torsion_fps(s, n_bits=2048),
+        ])),
     ]
     for name, fp_fn in fp_configs:
-        print(f"\n  Sklearn ({name}, 2048 bits)...")
+        print(f"\n  Sklearn ({name}, 6144 bits)...")
         X_train_fp = fp_fn(train_smis)
         X_val_fp = fp_fn(val_smis)
         sk_tr, sk_pr, sk_m = train_sklearn_model(
