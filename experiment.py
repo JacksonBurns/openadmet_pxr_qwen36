@@ -443,9 +443,22 @@ def train_model(model_config, processed_data):
     # Sklearn with diverse fingerprints
     sk_trained = {}
     sk_preds_dict = {}
-    fp_configs = []
-    sk_trained = {}
-    sk_preds_dict = {}
+    fp_configs = [
+        ("r1", lambda s: compute_morgan_fps(s, radius=1, n_bits=2048)),
+        ("ap", lambda s: compute_atompair_fps(s, n_bits=2048)),
+        ("tt", lambda s: compute_torsion_fps(s, n_bits=2048)),
+        ("maccs", compute_maccs_fps),
+    ]
+    for name, fp_fn in fp_configs:
+        print(f"\n  Sklearn ({name}, 2048 bits)...")
+        X_train_fp = fp_fn(train_smis)
+        X_val_fp = fp_fn(val_smis)
+        sk_tr, sk_pr, sk_m = train_sklearn_model(
+            X_train_fp, train_pec50, X_val_fp, val_pec50
+        )
+        sk_trained[name] = (sk_tr, fp_fn)
+        sk_preds_dict[f"sklearn_{name}"] = sk_pr
+        print(f"    Sklearn {name} MAE: {sk_m:.4f}")
 
     # Ensemble weights
     print("\n--- Optimizing Ensemble Weights ---")
@@ -490,8 +503,17 @@ def train_model(model_config, processed_data):
         checkpoint_dir="chemeleon", n_tasks=1,
     )
 
-    # No sklearn models
+    # Sklearn on full data (all fingerprint types)
     sklearn_finals = {}
+    for name, (trained, fp_fn) in sk_trained.items():
+        print(f"  Sklearn {name} GB...")
+        X_full = fp_fn(smis)
+        model_orig, _ = trained
+        scaler_final = StandardScaler()
+        X_scaled = scaler_final.fit_transform(X_full)
+        model_final = type(model_orig)(**model_orig.get_params())
+        model_final.fit(X_scaled, y_pEC50)
+        sklearn_finals[name] = (model_final, scaler_final, fp_fn)
 
     return {
         "chemprop_mt_trainer": final_mt_trainer,
@@ -530,11 +552,19 @@ def evaluate_model(model, test=None):
     ch_preds = torch.cat(ch_preds, dim=0).cpu().numpy().ravel()
     print(f"  CheMeleon: [{ch_preds.min():.2f}, {ch_preds.max():.2f}]")
 
-     # Ensemble (Chemprop MT + CheMeleon only)
+     # Sklearn at multiple fingerprint types
+    sk_test_preds = {}
+    for name, (model_inst, scaler, fp_fn) in model["sklearn_finals"].items():
+        X_test = fp_fn(test_smiles)
+        X_scaled = scaler.transform(X_test)
+        sk_test_preds[f"sklearn_{name}"] = model_inst.predict(X_scaled)
+
+    # Ensemble
     all_preds = {
         "chemprop_mt": chemprop_mt_pred,
         "chemeleon": ch_preds,
     }
+    all_preds.update(sk_test_preds)
 
     final_pred = np.zeros(len(test_smiles))
     total_weight = 0
@@ -549,7 +579,9 @@ def evaluate_model(model, test=None):
     final_pred = np.clip(final_pred, 1.5, 8.0)
 
     print(f"  Chemprop MT: [{chemprop_mt_pred.min():.2f}, {chemprop_mt_pred.max():.2f}]")
-    print(f"  CheMeleon:   [{ch_preds.min():.2f}, {ch_preds.max():.2f}]")
+    for name in sorted(sk_test_preds.keys()):
+        p = sk_test_preds[name]
+        print(f"  {name}:   [{p.min():.2f}, {p.max():.2f}]")
     print(f"  Ensemble:    [{final_pred.min():.2f}, {final_pred.max():.2f}]")
 
     # Evaluate
@@ -571,9 +603,10 @@ def evaluate_model(model, test=None):
         "Molecule Name": test["Molecule Name"].values,
         "SMILES": test_smiles,
         "Chemprop_MT": chemprop_mt_pred,
-        "CheMeleon": ch_preds,
-        "Ensemble": final_pred,
     })
+    for name in sorted(sk_test_preds.keys()):
+        results[name] = sk_test_preds[name]
+    results["Ensemble"] = final_pred
     
     results.to_csv("predictions.csv", index=False)
     print("\n  Predictions saved to predictions.csv")
