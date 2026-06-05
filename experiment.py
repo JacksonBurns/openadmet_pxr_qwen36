@@ -471,15 +471,12 @@ def train_model(model_config, processed_data):
     print(f"    MAE (pEC50): {mean_absolute_error(val_pec50, mt_pec50):.4f}")
 
     # CheMeleon foundation model (finetuned, low LR)
-    print("\n  CheMeleon Foundation (MT)...")
-    train_mt = np.column_stack([train_pec50, train_Emax])
-    val_mt = np.column_stack([val_pec50, val_Emax])
-    mt_ch_preds, _, _ = train_chemeleon(
-        train_smis, train_mt, val_smis, val_mt,
-        checkpoint_dir="chemeleon_mt", n_tasks=2,
+    print("\n  CheMeleon Foundation...")
+    ch_preds, _, _ = train_chemeleon(
+        train_smis, train_pec50, val_smis, val_pec50,
+        checkpoint_dir="chemeleon", n_tasks=1,
     )
-    ch_pec50 = mt_ch_preds[:, 0] if mt_ch_preds.ndim == 2 else mt_ch_preds
-    print(f"    MAE (pEC50): {mean_absolute_error(val_pec50, ch_pec50):.4f}")
+    print(f"    MAE (pEC50): {mean_absolute_error(val_pec50, ch_preds):.4f}")
 
     # Sklearn with diverse fingerprints
     sk_trained = {}
@@ -509,7 +506,7 @@ def train_model(model_config, processed_data):
     print("\n--- Optimizing Ensemble Weights ---")
     all_val_preds = {
         "chemprop_mt": mt_pec50,
-        "chemeleon_mt": ch_pec50,
+        "chemeleon": ch_preds,
     }
     all_val_preds.update(sk_preds_dict)
 
@@ -540,12 +537,12 @@ def train_model(model_config, processed_data):
     np.random.shuffle(holdout_idx)
     split_pt = int(0.8 * len(holdout_idx))
     ch_train_smis = smis[holdout_idx[:split_pt]]
-    ch_train_mt = np.column_stack([y_pEC50[holdout_idx[:split_pt]], y_Emax[holdout_idx[:split_pt]]])
+    ch_train_y = y_pEC50[holdout_idx[:split_pt]]
     ch_val_smis = smis[holdout_idx[split_pt:]]
-    ch_val_mt = np.column_stack([y_pEC50[holdout_idx[split_pt:]], y_Emax[holdout_idx[split_pt:]]])
+    ch_val_y = y_pEC50[holdout_idx[split_pt:]]
     _, final_ch_trainer, final_ch_cp = train_chemeleon(
-        ch_train_smis, ch_train_mt, ch_val_smis, ch_val_mt,
-        checkpoint_dir="chemeleon_mt", n_tasks=2,
+        ch_train_smis, ch_train_y, ch_val_smis, ch_val_y,
+        checkpoint_dir="chemeleon", n_tasks=1,
     )
 
     # Sklearn on full data (all fingerprint types)
@@ -563,8 +560,8 @@ def train_model(model_config, processed_data):
     return {
         "chemprop_mt_trainer": final_mt_trainer,
         "chemprop_mt_cp": final_mt_cp,
-        "chemeleon_mt_trainer": final_ch_trainer,
-        "chemeleon_mt_cp": final_ch_cp,
+        "chemeleon_trainer": final_ch_trainer,
+        "chemeleon_cp": final_ch_cp,
         "sklearn_finals": sklearn_finals,
         "ensemble_weights": ensemble_weights,
         "ensemble_mae": ensemble_mae,
@@ -591,12 +588,11 @@ def evaluate_model(model, test=None):
     ch_test_data = [data.LazyMoleculeDatapoint(s) for s in test_smiles]
     ch_test_dset = data.CuikmolmakerDataset(ch_test_data, CuikmolmakerMolGraphFeaturizer())
     ch_test_loader = data.build_dataloader(ch_test_dset, batch_size=64, shuffle=False, num_workers=2, persistent_workers=True)
-    ch_preds = model["chemeleon_mt_trainer"].predict(
-        model["chemeleon_mt_trainer"].lightning_module, ch_test_loader,
-        ckpt_path=model["chemeleon_mt_cp"].best_model_path)
-    ch_preds = torch.cat(ch_preds, dim=0).cpu().numpy()
-    ch_pec50 = ch_preds[:, 0] if ch_preds.ndim == 2 else ch_preds
-    print(f"  CheMeleon MT: [{ch_pec50.min():.2f}, {ch_pec50.max():.2f}]")
+    ch_preds = model["chemeleon_trainer"].predict(
+        model["chemeleon_trainer"].lightning_module, ch_test_loader,
+        ckpt_path=model["chemeleon_cp"].best_model_path)
+    ch_preds = torch.cat(ch_preds, dim=0).cpu().numpy().ravel()
+    print(f"  CheMeleon: [{ch_preds.min():.2f}, {ch_preds.max():.2f}]")
 
      # Sklearn at multiple fingerprint types
     sk_test_preds = {}
@@ -608,7 +604,7 @@ def evaluate_model(model, test=None):
     # Ensemble
     all_preds = {
         "chemprop_mt": chemprop_mt_pred,
-        "chemeleon_mt": ch_pec50,
+        "chemeleon": ch_preds,
     }
     all_preds.update(sk_test_preds)
 
@@ -649,7 +645,6 @@ def evaluate_model(model, test=None):
         "Molecule Name": test["Molecule Name"].values,
         "SMILES": test_smiles,
         "Chemprop_MT": chemprop_mt_pred,
-        "CheMeleon_MT": ch_pec50,
     })
     for name in sorted(sk_test_preds.keys()):
         results[name] = sk_test_preds[name]
