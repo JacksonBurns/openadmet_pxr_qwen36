@@ -361,18 +361,20 @@ def train_sklearn_model(X_train, y_train, X_val, y_val):
 # ============================================================================
 
 def optimize_ensemble_weights(val_preds_dict, y_val):
-    """Fixed weights: 0.5 Chemprop MT + 0.5 CheMeleon, weak sklearn at 0."""
+    """Ridge stacking meta-learner on top model predictions."""
     names = sorted(val_preds_dict.keys())
-    weight_dict = {name: 0.0 for name in names}
-    weight_dict["chemprop_mt"] = 0.5
-    weight_dict["chemeleon"] = 0.5
-    
-    pred = np.zeros(len(y_val))
-    for name in names:
-        pred += weight_dict[name] * val_preds_dict[name]
-    total = sum(weight_dict.values())
-    if total > 0:
-        pred /= total
+    n_models = len(names)
+    X_meta = np.column_stack([val_preds_dict[name] for name in names])
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X_meta)
+    meta = Ridge(alpha=1.0, random_state=SEED)
+    meta.fit(X_scaled, y_val)
+    coefs = meta.coef_
+    weights = np.abs(coefs)
+    total = weights.sum()
+    weights = weights / total if total > 0 else np.ones(n_models) / n_models
+    weight_dict = dict(zip(names, weights))
+    pred = meta.predict(X_scaled)
     best_mae = mean_absolute_error(y_val, pred)
     return weight_dict, best_mae
 

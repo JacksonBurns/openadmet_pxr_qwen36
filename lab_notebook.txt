@@ -1,8 +1,2 @@
 Lab notebook for autoresearch/jun4 (started 2026-06-04)
-
-Run 01: Baseline — MAE 0.4947, 837.5s. Val: 0.4650.
-Run 02-11: All reverted (11 failures across XGB/Chemprop/CheMeleon/ensemble/data)
-
-Run 12: Fixed 50/50 Chemprop MT + CheMeleon weights (drop Ridge optimization)
-  Hypothesis: Ridge learns val split, not general weights. Fixed 50/50 generalizes.
-  sklearn models still trained but get 0 weight (kept for future ablation).
+Baseline model: Chemprop MT (pEC50+Emax) + CheMeleon + 4x sklearn (Morgan r1, AtomPair, Torsion, MACCS) with Ridge stacking ensemble.
