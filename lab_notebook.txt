@@ -1,10 +1,13 @@
 Lab notebook for autoresearch/jun4 (started 2026-06-04)
 
 Run 01: Baseline — MAE 0.4947, 837.5s.
+Run 02-12: All reverted (12 failures)
 Run 13: **MAE 0.4928** IMPROVED! Concat Morgan r1 + ap + tt → single XGB
 Run 15: **MAE 0.4852** IMPROVED! + Morgan count + physchem + MACCS
-Run 19: **MAE 0.4815** IMPROVED! CheMeleon patience 15→25
   ADVANCED branch.
+Run 16: XGB est 1000 — MAE 0.4854 (reverted)
+Run 17: XGB depth 7, lr 0.03 — MAE 0.4943 (reverted)
+Run 18: Add Morgan r2 binary to concat — MAE 0.4907 (reverted)
 
-Run 20: Chemprop patience 12→25, max_epochs 80→100 (both models)
-  Hypothesis: if more patience helped CheMeleon, it will help Chemprop too.
+Run 19: CheMeleon patience 15→25 (more training epochs)
+  Hypothesis: CheMeleon can benefit from more training (val MAE was 0.4918)
