@@ -340,7 +340,7 @@ def train_sklearn_model(X_train, y_train, X_val, y_val):
     X_val_sc = scaler.transform(X_val)
 
     model = XGBRegressor(
-        n_estimators=500, 
+        n_estimators=1000, 
         max_depth=5, 
         learning_rate=0.05,
         subsample=0.8, 
@@ -448,10 +448,11 @@ def train_model(model_config, processed_data):
             compute_morgan_fps(s, radius=1, n_bits=2048),
             compute_atompair_fps(s, n_bits=2048),
             compute_torsion_fps(s, n_bits=2048),
+            compute_maccs_fps(s),
         ])),
     ]
     for name, fp_fn in fp_configs:
-        print(f"\n  Sklearn ({name}, 6144 bits)...")
+        print(f"\n  Sklearn ({name}, 6311 bits)...")
         X_train_fp = fp_fn(train_smis)
         X_val_fp = fp_fn(val_smis)
         sk_tr, sk_pr, sk_m = train_sklearn_model(

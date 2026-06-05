@@ -1,9 +1,8 @@
 Lab notebook for autoresearch/jun4 (started 2026-06-04)
 
-Run 01: Baseline — MAE 0.4947, 837.5s. Val: 0.4650.
-Run 02-12: All reverted (12 failures across all categories)
+Run 01: Baseline — MAE 0.4947, 837.5s.
+Run 02-12: All reverted (12 failures)
+Run 13: **MAE 0.4928** IMPROVED! Concat Morgan r1 + ap + tt → single XGB
 
-Run 13: Concatenate Morgan r1 + ap + tt into single 6144-bit feature vector
-  Structural change: one powerful XGB model instead of 4 weak ones.
-  Hypothesis: XGB can leverage feature diversity internally better than
-  ensemble of separate models can.
+Run 14: Add MACCS to concat (6311 bits) + XGB est 500→1000
+  Hypothesis: MACCS adds interpretable structural bits. More est. to use features.
