@@ -484,7 +484,6 @@ def train_model(model_config, processed_data):
     fp_configs = [
         ("concat", lambda s: np.hstack([
             compute_morgan_fps(s, radius=1, n_bits=2048),
-            compute_morgan_fps(s, radius=2, n_bits=2048),
             compute_morgan_count_fps(s, radius=2, n_bits=2048),
             compute_atompair_fps(s, n_bits=2048),
             compute_torsion_fps(s, n_bits=2048),
@@ -493,7 +492,7 @@ def train_model(model_config, processed_data):
         ])),
     ]
     for name, fp_fn in fp_configs:
-        print(f"\n  Sklearn ({name}, 8420 feat)...")
+        print(f"\n  Sklearn ({name}, 6372 feat)...")
         X_train_fp = fp_fn(train_smis)
         X_val_fp = fp_fn(val_smis)
         sk_tr, sk_pr, sk_m = train_sklearn_model(
