@@ -142,12 +142,12 @@ def compute_morgan_count_fps(smis, radius=2, n_bits=2048, n_jobs=-1):
     """Compute Morgan count fingerprints (not binary)."""
     def _get_fp(s):
         gen = rdFingerprintGenerator.GetMorganGenerator(
-            radius=radius, fpSize=n_bits, countBased=True
+            radius=radius, fpSize=n_bits, countSimulation=True
         )
         mol = Chem.MolFromSmiles(s)
         if mol is None:
             return np.zeros(n_bits, dtype=np.float32)
-        return gen.GetCountFingerprintAsNumPy(mol).astype(np.float32)
+        return gen.GetFingerprintAsNumPy(mol).astype(np.float32)
         
     fps = Parallel(n_jobs=n_jobs)(delayed(_get_fp)(s) for s in smis)
     return np.array(fps)
