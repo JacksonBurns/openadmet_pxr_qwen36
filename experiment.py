@@ -237,7 +237,7 @@ def train_chemeleon(smis, ys, val_smis, val_ys, batch_size=64,
     )
     early_stop_cb = EarlyStopping(
         monitor="val_loss",
-        patience=15,
+        patience=25,
         mode="min",
     )
 
