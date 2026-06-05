@@ -158,11 +158,10 @@ def compute_physchem_descriptors(smis, n_jobs=-1):
     from rdkit.Chem import Descriptors
     
     DESCRIPTORS = [
-        "MW", "LogP", "TPSA", "NumHDonors", "NumHAcceptors",
+        "MolWt", "MolLogP", "TPSA", "NumHDonors", "NumHAcceptors",
         "NumRotatableBonds", "NumAromaticRings", "NumAliphaticRings",
-        "NumHeteroatoms", "NumAtoms", "NumHeavyAtoms",
-        "MolWt", "LabuteASA", "HallAlike", "HallAlike",
-        "NumRings",
+        "NumHeteroatoms", "HeavyAtomCount", "RingCount",
+        "LabuteASA", "HeavyAtomMolWt",
     ]
     
     def _get_desc(s):
@@ -493,7 +492,7 @@ def train_model(model_config, processed_data):
         ])),
     ]
     for name, fp_fn in fp_configs:
-        print(f"\n  Sklearn ({name}, 6327 feat)...")
+        print(f"\n  Sklearn ({name}, 6372 feat)...")
         X_train_fp = fp_fn(train_smis)
         X_val_fp = fp_fn(val_smis)
         sk_tr, sk_pr, sk_m = train_sklearn_model(
