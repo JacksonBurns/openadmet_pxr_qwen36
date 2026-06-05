@@ -1,2 +1,9 @@
 Lab notebook for autoresearch/jun4 (started 2026-06-04)
-Baseline model: Chemprop MT (pEC50+Emax) + CheMeleon + 4x sklearn (Morgan r1, AtomPair, Torsion, MACCS) with Ridge stacking ensemble.
+
+Run 01: Baseline — MAE 0.4947, 837.5s. Val: 0.4650.
+Run 02-10: All reverted (various XGB/Chemprop/CheMeleon/ensemble/data changes)
+
+Run 11: [PLATEAU] Structural: Drop all 4 sklearn models entirely
+  Ensemble: Chemprop MT + CheMeleon only. Remove Ridge, use optimized 2-weight.
+  Hypothesis: weak sklearn models (0.57-0.62 MAE) inject noise into ensemble.
+  Simpler = better.
