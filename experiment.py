@@ -379,11 +379,9 @@ def train_sklearn_model(X_train, y_train, X_val, y_val):
 
     model = XGBRegressor(
         n_estimators=500, 
-        max_depth=6, 
+        max_depth=5, 
         learning_rate=0.05,
         subsample=0.8, 
-        colsample_bytree=0.8,
-        reg_alpha=0.1,
         random_state=SEED,
         tree_method="hist", 
         device="cuda",
