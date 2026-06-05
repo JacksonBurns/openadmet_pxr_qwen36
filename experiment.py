@@ -138,6 +138,45 @@ def compute_maccs_fps(smis, n_jobs=-1):
     return np.array(fps)
 
 
+def compute_morgan_count_fps(smis, radius=2, n_bits=2048, n_jobs=-1):
+    """Compute Morgan count fingerprints (not binary)."""
+    def _get_fp(s):
+        gen = rdFingerprintGenerator.GetMorganGenerator(
+            radius=radius, fpSize=n_bits, countBased=True
+        )
+        mol = Chem.MolFromSmiles(s)
+        if mol is None:
+            return np.zeros(n_bits, dtype=np.float32)
+        return gen.GetCountFingerprintAsNumPy(mol).astype(np.float32)
+        
+    fps = Parallel(n_jobs=n_jobs)(delayed(_get_fp)(s) for s in smis)
+    return np.array(fps)
+
+
+def compute_physchem_descriptors(smis, n_jobs=-1):
+    """Compute 16 RDKit physicochemical descriptors."""
+    from rdkit.Chem import Descriptors
+    
+    DESCRIPTORS = [
+        "MW", "LogP", "TPSA", "NumHDonors", "NumHAcceptors",
+        "NumRotatableBonds", "NumAromaticRings", "NumAliphaticRings",
+        "NumHeteroatoms", "NumAtoms", "NumHeavyAtoms",
+        "MolWt", "LabuteASA", "HallAlike", "HallAlike",
+        "NumRings",
+    ]
+    
+    def _get_desc(s):
+        mol = Chem.MolFromSmiles(s)
+        if mol is None:
+            return np.zeros(len(DESCRIPTORS), dtype=np.float32)
+        return np.array([
+            float(getattr(Descriptors, name)(mol)) for name in DESCRIPTORS
+        ], dtype=np.float32)
+        
+    fps = Parallel(n_jobs=n_jobs)(delayed(_get_desc)(s) for s in smis)
+    return np.array(fps)
+
+
 def train_chemeleon(smis, ys, val_smis, val_ys, batch_size=64,
                     max_epochs=80, checkpoint_dir="chemeleon", n_tasks=1):
     """Finetune CheMeleon foundation model for regression."""
@@ -340,7 +379,7 @@ def train_sklearn_model(X_train, y_train, X_val, y_val):
     X_val_sc = scaler.transform(X_val)
 
     model = XGBRegressor(
-        n_estimators=1000, 
+        n_estimators=500, 
         max_depth=5, 
         learning_rate=0.05,
         subsample=0.8, 
@@ -446,13 +485,15 @@ def train_model(model_config, processed_data):
     fp_configs = [
         ("concat", lambda s: np.hstack([
             compute_morgan_fps(s, radius=1, n_bits=2048),
+            compute_morgan_count_fps(s, radius=2, n_bits=2048),
             compute_atompair_fps(s, n_bits=2048),
             compute_torsion_fps(s, n_bits=2048),
             compute_maccs_fps(s),
+            compute_physchem_descriptors(s),
         ])),
     ]
     for name, fp_fn in fp_configs:
-        print(f"\n  Sklearn ({name}, 6311 bits)...")
+        print(f"\n  Sklearn ({name}, 6327 feat)...")
         X_train_fp = fp_fn(train_smis)
         X_val_fp = fp_fn(val_smis)
         sk_tr, sk_pr, sk_m = train_sklearn_model(

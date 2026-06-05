@@ -3,6 +3,9 @@ Lab notebook for autoresearch/jun4 (started 2026-06-04)
 Run 01: Baseline — MAE 0.4947, 837.5s.
 Run 02-12: All reverted (12 failures)
 Run 13: **MAE 0.4928** IMPROVED! Concat Morgan r1 + ap + tt → single XGB
+Run 14: Add MACCS + XGB est 1000 — aborted by user
 
-Run 14: Add MACCS to concat (6311 bits) + XGB est 500→1000
-  Hypothesis: MACCS adds interpretable structural bits. More est. to use features.
+Run 15: Add Morgan count (r2, 2048) + physchem descriptors (16 feat) to concat
+  Total: 2048(morgan) + 2048(count) + 2048(ap) + 2048(tt) + 167(maccs) + 16(physchem) = 6327
+  Hypothesis: count fingerprints capture substructure frequency, physchem adds
+  interpretable ADMET-relevant features (LogP, TPSA, etc.) for PXR binding.
