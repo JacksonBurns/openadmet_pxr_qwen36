@@ -484,7 +484,7 @@ def train_model(model_config, processed_data):
     fp_configs = [
         ("concat", lambda s: np.hstack([
             compute_morgan_fps(s, radius=1, n_bits=2048),
-            compute_morgan_count_fps(s, radius=2, n_bits=2048),
+            compute_morgan_count_fps(s, radius=3, n_bits=2048),
             compute_atompair_fps(s, n_bits=2048),
             compute_torsion_fps(s, n_bits=2048),
             compute_maccs_fps(s),
