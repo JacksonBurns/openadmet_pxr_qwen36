@@ -361,22 +361,41 @@ def train_sklearn_model(X_train, y_train, X_val, y_val):
 # ============================================================================
 
 def optimize_ensemble_weights(val_preds_dict, y_val):
-    """Ridge stacking meta-learner on top model predictions."""
+    """Simple weighted average — no Ridge to avoid val overfitting."""
     names = sorted(val_preds_dict.keys())
     n_models = len(names)
-    X_meta = np.column_stack([val_preds_dict[name] for name in names])
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X_meta)
-    meta = Ridge(alpha=1.0, random_state=SEED)
-    meta.fit(X_scaled, y_val)
-    coefs = meta.coef_
-    weights = np.abs(coefs)
-    total = weights.sum()
-    weights = weights / total if total > 0 else np.ones(n_models) / n_models
-    weight_dict = dict(zip(names, weights))
-    pred = meta.predict(X_scaled)
-    best_mae = mean_absolute_error(y_val, pred)
-    return weight_dict, best_mae
+    
+    # Try uniform weights
+    pred_uniform = np.mean([val_preds_dict[name] for name in names], axis=0)
+    mae_uniform = mean_absolute_error(y_val, pred_uniform)
+    
+    # Try 50/50 CheMeleon + Chemprop (drop weak sklearn models)
+    core = ["chemprop_mt", "chemeleon"]
+    pred_core = 0.5 * val_preds_dict["chemprop_mt"] + 0.5 * val_preds_dict["chemeleon"]
+    mae_core = mean_absolute_error(y_val, pred_core)
+    
+    if mae_core < mae_uniform:
+        # Optimize 2-weight split
+        best_w, best_m = 0.5, mae_core
+        for w in np.arange(0.0, 1.01, 0.025):
+            pred = w * val_preds_dict["chemprop_mt"] + (1 - w) * val_preds_dict["chemeleon"]
+            m = mean_absolute_error(y_val, pred)
+            if m < best_m:
+                best_m, best_w = m, w
+        weight_dict = {
+            "chemprop_mt": best_w,
+            "chemeleon": 1 - best_w,
+        }
+        for name in names:
+            if name not in weight_dict:
+                weight_dict[name] = 0.0
+        # Normalize
+        total = sum(weight_dict.values())
+        weight_dict = {k: v/total for k, v in weight_dict.items()}
+        return weight_dict, best_m
+    else:
+        w = 1.0 / n_models
+        return {name: w for name in names}, mae_uniform
 
 
 # ============================================================================
