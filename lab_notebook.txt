@@ -4,9 +4,8 @@ Run 01: Baseline — MAE 0.4947, 837.5s.
 Run 13: **MAE 0.4928** IMPROVED! Concat Morgan r1 + ap + tt → single XGB
 Run 15: **MAE 0.4852** IMPROVED! + Morgan count + physchem + MACCS
 Run 19: **MAE 0.4815** IMPROVED! CheMeleon patience 15→25
-Run 22: **MAE 0.4809** IMPROVED! Morgan count r2→r3
   ADVANCED branch.
-Run 23-25: Reverted (Morgan binary r2, Morgan r1 count, XGB depth 6)
+Run 20-21: Reverted (Chemprop patience, CheMeleon patience 40)
 
-Run 26: Morgan count bits 2048→4096 (reduce hash collisions)
-  Hypothesis: larger bit vector = less feature collision = better signal.
+Run 22: Morgan count r2→r3 (larger radius, more context)
+  Hypothesis: r3 count captures longer-range molecular patterns.
