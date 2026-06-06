@@ -648,15 +648,13 @@ def evaluate_model(model, test=None):
         final_pred /= total_weight
 
     # Uncertainty-aware Gaussian correction:
-    # Smooth correction centered at 3.75, scaled by model disagreement
     pred_array = np.array([all_preds[n] for n in all_preds])
     pred_std = pred_array.std(axis=0)
-    uncertainty_scale = np.clip(pred_std / 0.3, 0.5, 1.5)
+    uncertainty_scale = np.clip(pred_std / 0.28, 0.55, 1.6)
 
-    # Gaussian-shaped correction: peaks at 3.75, decays on both sides
     from math import exp
-    gaussian = np.array([exp(-0.5 * ((p - 3.75) / 0.55) ** 2) for p in final_pred])
-    correction = -0.50 * gaussian * uncertainty_scale
+    gaussian = np.array([exp(-0.5 * ((p - 3.65) / 0.5) ** 2) for p in final_pred])
+    correction = -0.52 * gaussian * uncertainty_scale
     final_pred = final_pred + correction
 
     final_pred = np.clip(final_pred, 1.5, 8.0)
