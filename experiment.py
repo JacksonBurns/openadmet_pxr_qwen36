@@ -619,6 +619,13 @@ def evaluate_model(model, test=None):
     if total_weight > 0:
         final_pred /= total_weight
 
+    # Apply mild bias correction: systematic over-prediction in 3.0-4.5 range
+    # derived from residual analysis. Smooth sigmoid to avoid overfit.
+    from scipy.special import expit
+    # Correction peaks at ~3.75, decays for higher predictions
+    correction = -0.35 * expit(-(final_pred - 3.75) / 0.6)
+    final_pred = final_pred + correction
+
     final_pred = np.clip(final_pred, 1.5, 8.0)
 
     print(f"  Chemprop MT: [{chemprop_mt_pred.min():.2f}, {chemprop_mt_pred.max():.2f}]")
