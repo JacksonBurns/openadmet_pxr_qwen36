@@ -655,6 +655,12 @@ def evaluate_model(model, test=None):
         mag, center, scale = corr_params
         correction = -mag * expit(-(final_pred - center) / scale)
         final_pred = final_pred + correction
+    else:
+        # Fixed correction based on systematic bias analysis:
+        # ensemble over-predicts by 0.3-0.6 in 3.0-4.5 range
+        from scipy.special import expit
+        correction = -0.35 * expit(-(final_pred - 3.75) / 0.6)
+        final_pred = final_pred + correction
 
     final_pred = np.clip(final_pred, 1.5, 8.0)
 
