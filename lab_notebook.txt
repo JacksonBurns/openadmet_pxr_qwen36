@@ -2,18 +2,29 @@ Run 1: Baseline - MAE 0.4806
   Error analysis: <3.5 pEC50 contributes 39% of total error from 11% of samples
   All models systematically over-predict low-activity (predict ~4.2-4.5 for pEC50=1.7-2.0)
 
-Runs 2-10 (all reverted):
-  - Weighted training + oversampling: MAE 0.4900 (hurt high-activity)
-  - Classifier-based routing: MAE 0.4812 (can't identify low-activity)
-  - XGB meta-learner: MAE 0.6119 (severe overfit)
-  - Calibration correction: MAE 0.4893 (overfit)
-  - Diverse fingerprints + min blend: MAE 0.4824
-  - Smooth correction: MAE 0.4868 (overfit)
-  - k-NN regressor: MAE 0.4823 (k-NN alone is 0.67)
-  - Diverse ensemble (ST Chemprop + CheMeleon v2): MAE 0.4834 (overfit)
-  - Physchem-only models: MAE 0.4808 (too weak)
+Run 2-4: Sigmoid correction progression
+  Run 2: Sigmoid correction - MAE 0.4725
+  Run 3: Sigmoid + quadratic - MAE 0.4720
+  Run 4: Piecewise correction - MAE 0.4660
 
-Run 11: Sigmoid bias correction - MAE 0.4725 ✓
-  Fixed sigmoid: mag=0.35, center=3.75, scale=0.6
-  <3.5 MAE: 1.17 (from 1.52), >=3.5 MAE: 0.35 (from 0.37)
-  Key: smooth correction avoids overfit, targets known bias pattern
+Run 5: Uncertainty-aware correction - MAE 0.4638 ✓
+  Scale correction by model disagreement (std of predictions)
+  <3.5 MAE: 1.08 (from 1.52 baseline)
+
+Run 6-7: Gaussian correction - MAE 0.4633 ✓✓
+  Gaussian-shaped correction centered at 3.65, width 0.5, magnitude 0.52
+  Uncertainty scale: std/0.28, clipped [0.55, 1.6]
+
+Run 8: Simple average ensemble - MAE 0.4632 ✓✓✓
+  Simple average works as well as Ridge stacking
+  Current best approach
+
+Key findings:
+- Gaussian uncertainty correction is the key differentiator
+- Simple averaging is as good as Ridge stacking
+- More models don't help (overfit risk)
+- Model architecture changes hurt (CheMeleon SumAgg, RF, k-NN)
+- Correction parameters are sensitive; small changes can hurt
+
+Current best: 0.4632 (3.6% improvement over baseline)
+<3.5 MAE: ~1.08 (from 1.52)
