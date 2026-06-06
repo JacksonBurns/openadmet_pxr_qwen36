@@ -656,10 +656,13 @@ def evaluate_model(model, test=None):
         correction = -mag * expit(-(final_pred - center) / scale)
         final_pred = final_pred + correction
     else:
-        # Fixed correction based on systematic bias analysis:
-        # ensemble over-predicts by 0.3-0.6 in 3.0-4.5 range
+        # Combined correction: sigmoid for low-end + quadratic for fine-tuning
         from scipy.special import expit
-        correction = -0.35 * expit(-(final_pred - 3.75) / 0.6)
+        # Primary: sigmoid correction for systematic over-prediction in 3.0-4.5
+        corr1 = -0.35 * expit(-(final_pred - 3.75) / 0.6)
+        # Secondary: gentle quadratic to correct high-end under-prediction
+        corr2 = -0.02 * (final_pred - 5.0) * (final_pred - 5.0)
+        correction = corr1 + corr2
         final_pred = final_pred + correction
 
     final_pred = np.clip(final_pred, 1.5, 8.0)
