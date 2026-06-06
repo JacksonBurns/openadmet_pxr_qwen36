@@ -631,21 +631,14 @@ def evaluate_model(model, test=None):
         X_scaled = scaler.transform(X_test)
         sk_test_preds[f"sklearn_{name}"] = model_inst.predict(X_scaled)
 
-    # Ensemble
+    # Ensemble - use simple averaging (more robust than Ridge)
     all_preds = {
         "chemprop_mt": chemprop_mt_pred,
         "chemeleon": ch_preds,
     }
     all_preds.update(sk_test_preds)
 
-    final_pred = np.zeros(len(test_smiles))
-    total_weight = 0
-    for name, weight in model["ensemble_weights"].items():
-        if name in all_preds:
-            final_pred += weight * all_preds[name]
-            total_weight += weight
-    if total_weight > 0:
-        final_pred /= total_weight
+    final_pred = np.mean(list(all_preds.values()), axis=0)
 
     # Uncertainty-aware Gaussian correction:
     pred_array = np.array([all_preds[n] for n in all_preds])
