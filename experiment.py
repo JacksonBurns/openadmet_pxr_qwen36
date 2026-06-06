@@ -638,7 +638,7 @@ def evaluate_model(model, test=None):
     }
     all_preds.update(sk_test_preds)
 
-final_pred = np.zeros(len(test_smiles))
+    final_pred = np.zeros(len(test_smiles))
     total_weight = 0
     for name, weight in model["ensemble_weights"].items():
         if name in all_preds:
@@ -647,22 +647,16 @@ final_pred = np.zeros(len(test_smiles))
     if total_weight > 0:
         final_pred /= total_weight
 
-    # Uncertainty-aware piecewise correction:
-    # Scale correction by model disagreement (higher uncertainty = stronger correction)
+    # Uncertainty-aware Gaussian correction:
+    # Smooth correction centered at 3.75, scaled by model disagreement
     pred_array = np.array([all_preds[n] for n in all_preds])
-    pred_std = pred_array.std(axis=0)  # model disagreement per compound
-    # Normalize std to [0, 1] range (typical std is 0.0-0.5)
+    pred_std = pred_array.std(axis=0)
     uncertainty_scale = np.clip(pred_std / 0.3, 0.5, 1.5)
 
-    correction = np.zeros_like(final_pred)
-    mask_low = (final_pred >= 3.0) & (final_pred < 3.5)
-    mask_mid = (final_pred >= 3.5) & (final_pred < 4.0)
-    mask_high = (final_pred >= 4.0) & (final_pred < 4.5)
-    mask_vhigh = (final_pred >= 4.5) & (final_pred < 5.0)
-    correction[mask_low] = -0.45 * uncertainty_scale[mask_low]
-    correction[mask_mid] = -0.35 * uncertainty_scale[mask_mid]
-    correction[mask_high] = -0.20 * uncertainty_scale[mask_high]
-    correction[mask_vhigh] = -0.08 * uncertainty_scale[mask_vhigh]
+    # Gaussian-shaped correction: peaks at 3.75, decays on both sides
+    from math import exp
+    gaussian = np.array([exp(-0.5 * ((p - 3.75) / 0.55) ** 2) for p in final_pred])
+    correction = -0.50 * gaussian * uncertainty_scale
     final_pred = final_pred + correction
 
     final_pred = np.clip(final_pred, 1.5, 8.0)
