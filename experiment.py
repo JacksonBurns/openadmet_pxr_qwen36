@@ -517,6 +517,33 @@ def train_model(model_config, processed_data):
     for name, w in sorted(ensemble_weights.items(), key=lambda x: -x[1]):
         print(f"    {name}: {w:.4f}")
 
+    # Find optimal sigmoid correction parameters via grid search
+    from scipy.special import expit
+    val_ensemble_pred = np.zeros(len(val_pec50))
+    tw = 0
+    for name, weight in ensemble_weights.items():
+        if name in all_val_preds:
+            val_ensemble_pred += weight * all_val_preds[name]
+            tw += weight
+    if tw > 0:
+        val_ensemble_pred /= tw
+
+    best_corr_mae = ensemble_mae
+    best_params = (0.0, 0.0, 0.0)  # magnitude, center, scale
+    for mag in np.arange(0.05, 0.55, 0.05):
+        for center in np.arange(3.0, 4.5, 0.25):
+            for scale in [0.3, 0.4, 0.5, 0.6, 0.8]:
+                corr = -mag * expit(-(val_ensemble_pred - center) / scale)
+                corrected = val_ensemble_pred + corr
+                corrected = np.clip(corrected, 1.5, 8.0)
+                m = mean_absolute_error(val_pec50, corrected)
+                if m < best_corr_mae:
+                    best_corr_mae = m
+                    best_params = (mag, center, scale)
+
+    corr_mae = best_corr_mae
+    print(f"  Sigmoid correction val MAE: {corr_mae:.4f} (params: mag={best_params[0]:.2f}, center={best_params[1]:.2f}, scale={best_params[2]:.2f})")
+
     # -------------------------------------------------------------------------
     # Phase 2: Train final models on FULL data for test predictions
     # -------------------------------------------------------------------------
@@ -567,6 +594,8 @@ def train_model(model_config, processed_data):
         "ensemble_weights": ensemble_weights,
         "ensemble_mae": ensemble_mae,
         "test": test,
+        "corr_params": best_params if corr_mae < ensemble_mae else (0.0, 0.0, 0.0),
+        "corr_improvement": corr_mae - ensemble_mae,
     }
 
 
@@ -619,12 +648,13 @@ def evaluate_model(model, test=None):
     if total_weight > 0:
         final_pred /= total_weight
 
-    # Apply mild bias correction: systematic over-prediction in 3.0-4.5 range
-    # derived from residual analysis. Smooth sigmoid to avoid overfit.
-    from scipy.special import expit
-    # Correction peaks at ~3.75, decays for higher predictions
-    correction = -0.35 * expit(-(final_pred - 3.75) / 0.6)
-    final_pred = final_pred + correction
+    # Apply optimized sigmoid bias correction
+    corr_params = model.get("corr_params", (0.0, 0.0, 0.0))
+    if corr_params[0] > 0:
+        from scipy.special import expit
+        mag, center, scale = corr_params
+        correction = -mag * expit(-(final_pred - center) / scale)
+        final_pred = final_pred + correction
 
     final_pred = np.clip(final_pred, 1.5, 8.0)
 
