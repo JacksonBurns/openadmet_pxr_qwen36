@@ -1,0 +1,2 @@
+Run 1: Baseline - Gaussian correction (mag=0.52, center=3.65, width=0.5, unc_scale=std/0.28, clip=[0.55,1.6]). MAE=0.4632. Starting point for iteration.
+Next: Fine-tune Gaussian magnitude.
