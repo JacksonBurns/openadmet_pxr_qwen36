@@ -646,8 +646,16 @@ def evaluate_model(model, test=None):
     uncertainty_scale = np.clip(pred_std / 0.28, 0.3, 2.5)
 
     from math import exp
-    gaussian = np.array([exp(-0.5 * ((p - 3.75) / 0.5) ** 2) for p in final_pred])
-    correction = -0.48 * gaussian * uncertainty_scale
+    # Asymmetric correction: narrower below peak (sharp drop), wider above (long tail)
+    # to match observed error profile
+    center = 3.75
+    sigma_left = 0.3  # sharp drop-off below center
+    sigma_right = 0.8  # wider tail above center
+    asymmetric = np.array([
+        exp(-0.5 * ((p - center) / (sigma_left if p < center else sigma_right)) ** 2)
+        for p in final_pred
+    ])
+    correction = -0.48 * asymmetric * uncertainty_scale
     final_pred = final_pred + correction
 
     final_pred = np.clip(final_pred, 1.5, 8.0)
