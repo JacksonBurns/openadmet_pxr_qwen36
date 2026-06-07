@@ -532,23 +532,54 @@ def train_model(model_config, processed_data):
     )
     print(f"    MAE (pEC50): {mean_absolute_error(val_pec50, ch_preds):.4f}")
 
-    # Sklearn with diverse fingerprints + osmordred
+    # Sklearn with fingerprints (original) + osmordred-only model
     sk_trained = {}
     sk_preds_dict = {}
-    fp_configs = [
-        ("concat_osm", lambda s: compute_osmordred_augmented(s, osmordred_train)),
-    ]
-    for name, fp_fn in fp_configs:
-        print(f"\n  Sklearn ({name})...")
-        X_train_fp = fp_fn(train_smis)
-        X_val_fp = fp_fn(val_smis)
-        print(f"    Feature dim: {X_train_fp.shape[1]}")
-        sk_tr, sk_pr, sk_m = train_sklearn_model(
-            X_train_fp, train_pec50, X_val_fp, val_pec50
-        )
-        sk_trained[name] = (sk_tr, fp_fn)
-        sk_preds_dict[f"sklearn_{name}"] = sk_pr
-        print(f"    Sklearn {name} MAE: {sk_m:.4f}")
+
+    # Original fingerprint-based XGBoost
+    print("\n  Sklearn (fingerprints)...")
+    X_train_fp = np.hstack([
+        compute_morgan_fps(train_smis, radius=1, n_bits=2048),
+        compute_morgan_count_fps(train_smis, radius=1, n_bits=2048),
+        compute_morgan_count_fps(train_smis, radius=3, n_bits=2048),
+        compute_atompair_fps(train_smis, n_bits=2048),
+        compute_torsion_fps(train_smis, n_bits=2048),
+        compute_maccs_fps(train_smis),
+        compute_physchem_descriptors(train_smis),
+    ])
+    X_val_fp = np.hstack([
+        compute_morgan_fps(val_smis, radius=1, n_bits=2048),
+        compute_morgan_count_fps(val_smis, radius=1, n_bits=2048),
+        compute_morgan_count_fps(val_smis, radius=3, n_bits=2048),
+        compute_atompair_fps(val_smis, n_bits=2048),
+        compute_torsion_fps(val_smis, n_bits=2048),
+        compute_maccs_fps(val_smis),
+        compute_physchem_descriptors(val_smis),
+    ])
+    sk_tr, sk_pr, sk_m = train_sklearn_model(X_train_fp, train_pec50, X_val_fp, val_pec50)
+    sk_trained["fingerprints"] = (sk_tr, lambda s: np.hstack([
+        compute_morgan_fps(s, radius=1, n_bits=2048),
+        compute_morgan_count_fps(s, radius=1, n_bits=2048),
+        compute_morgan_count_fps(s, radius=3, n_bits=2048),
+        compute_atompair_fps(s, n_bits=2048),
+        compute_torsion_fps(s, n_bits=2048),
+        compute_maccs_fps(s),
+        compute_physchem_descriptors(s),
+    ]))
+    sk_preds_dict["sklearn_fingerprints"] = sk_pr
+    print(f"    Sklearn fingerprints MAE: {sk_m:.4f}")
+
+    # Osmordred-only XGBoost (diversity for ensemble)
+    print("\n  Sklearn (osmordred)...")
+    X_train_osm = compute_osmordred_only(train_smis, osmordred_train)
+    X_val_osm = compute_osmordred_only(val_smis, osmordred_train)
+    print(f"    Osmordred feature dim: {X_train_osm.shape[1]}")
+    sk_tr_osm, sk_pr_osm, sk_m_osm = train_sklearn_model(
+        X_train_osm, train_pec50, X_val_osm, val_pec50
+    )
+    sk_trained["osmordred"] = (sk_tr_osm, lambda s: compute_osmordred_only(s, osmordred_train))
+    sk_preds_dict["sklearn_osmordred"] = sk_pr_osm
+    print(f"    Sklearn osmordred MAE: {sk_m_osm:.4f}")
 
     # Ensemble weights
     print("\n--- Optimizing Ensemble Weights ---")
@@ -672,10 +703,22 @@ def evaluate_model(model, test=None):
     ch_preds = torch.cat(ch_preds, dim=0).cpu().numpy().ravel()
     print(f"  CheMeleon: [{ch_preds.min():.2f}, {ch_preds.max():.2f}]")
 
-     # Sklearn at multiple fingerprint types (use osmordred_test for test data)
+     # Sklearn predictions
     sk_test_preds = {}
+    osm_test = model["osmordred_test"]
     for name, (model_inst, scaler, fp_fn) in model["sklearn_finals"].items():
-        X_test = compute_osmordred_augmented(test_smiles, model["osmordred_test"])
+        if name == "osmordred":
+            X_test = compute_osmordred_only(test_smiles, osm_test)
+        else:
+            X_test = np.hstack([
+                compute_morgan_fps(test_smiles, radius=1, n_bits=2048),
+                compute_morgan_count_fps(test_smiles, radius=1, n_bits=2048),
+                compute_morgan_count_fps(test_smiles, radius=3, n_bits=2048),
+                compute_atompair_fps(test_smiles, n_bits=2048),
+                compute_torsion_fps(test_smiles, n_bits=2048),
+                compute_maccs_fps(test_smiles),
+                compute_physchem_descriptors(test_smiles),
+            ])
         X_scaled = scaler.transform(X_test)
         sk_test_preds[f"sklearn_{name}"] = model_inst.predict(X_scaled)
 
