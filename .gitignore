@@ -9,6 +9,9 @@ examples
 # ...except the autoresearch progress log
 !results.csv
 
+# and parquet as well
+*.parquet
+
 # experiment outputs
 checkpoints
 
