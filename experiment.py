@@ -177,10 +177,12 @@ def compute_physchem_descriptors(smis, n_jobs=-1):
 
 
 def load_osmordred_features(smis, osmordred_df):
-    """Load osmordred features for given SMILES, handling nulls."""
+    """Load osmordred features for given SMILES, handling nulls and infs."""
     osmordred = osmordred_df.set_index("SMILES").loc[smis].reset_index()
     feat_cols = [c for c in osmordred.columns if c != "SMILES"]
     features = osmordred[feat_cols].values.astype(np.float32)
+    # Replace inf/-inf with NaN, then handle all NaN
+    features = np.where(np.isinf(features), np.nan, features)
     mask = np.isnan(features)
     col_null_ratio = mask.sum(axis=0) / len(features)
     drop_cols = col_null_ratio > 0.1
@@ -189,6 +191,8 @@ def load_osmordred_features(smis, osmordred_df):
     col_means = np.nanmean(features, axis=0)
     col_means = np.where(np.isnan(col_means), 0, col_means)
     features = np.where(remaining_nan, col_means, features)
+    # Clip extreme values
+    features = np.clip(features, -1e6, 1e6)
     return features
 
 
