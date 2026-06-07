@@ -647,17 +647,7 @@ def evaluate_model(model, test=None):
 
     from math import exp
     gaussian = np.array([exp(-0.5 * ((p - 3.75) / 0.5) ** 2) for p in final_pred])
-    
-    # Physchem-modulated correction: high LogP → less downward correction
-    # (hydrophobic compounds more likely to be active)
-    physchem_test = compute_physchem_descriptors(test_smiles)
-    logp = physchem_test[:, 1]  # MolLogP
-    tpsa = physchem_test[:, 2]  # TPSA
-    # Normalize to [0,1] and create modifier
-    logp_mod = np.clip((logp - 1.0) / 5.0, 0, 1)  # low LogP → 0, high LogP → 1
-    physchem_boost = 1.3 - 0.5 * logp_mod  # range [0.8, 1.3]
-    
-    correction = -0.48 * gaussian * uncertainty_scale * physchem_boost
+    correction = -0.48 * gaussian * uncertainty_scale
     final_pred = final_pred + correction
 
     final_pred = np.clip(final_pred, 1.5, 8.0)
