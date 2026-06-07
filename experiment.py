@@ -646,23 +646,8 @@ def evaluate_model(model, test=None):
     uncertainty_scale = np.clip(pred_std / 0.28, 0.3, 2.5)
 
     from math import exp
-    # Smooth piecewise correction: 5 bins with cosine-smoothed transitions
-    # Better matches error profile than single Gaussian
-    def smooth_correction(p):
-        if p < 3.0:
-            return 0.60
-        elif p < 3.5:
-            return 0.60 - 0.10 * (1 - np.cos((p - 3.0) / 0.5 * np.pi)) / 2
-        elif p < 4.0:
-            return 0.50 - 0.15 * (1 - np.cos((p - 3.5) / 0.5 * np.pi)) / 2
-        elif p < 4.5:
-            return 0.35 - 0.15 * (1 - np.cos((p - 4.0) / 0.5 * np.pi)) / 2
-        elif p < 5.0:
-            return 0.20 - 0.20 * (1 - np.cos((p - 4.5) / 0.5 * np.pi)) / 2
-        else:
-            return 0.0
-    piecewise = np.array([smooth_correction(p) for p in final_pred])
-    correction = -piecewise * uncertainty_scale
+    gaussian = np.array([exp(-0.5 * ((p - 3.75) / 0.5) ** 2) for p in final_pred])
+    correction = -0.48 * gaussian * uncertainty_scale
     final_pred = final_pred + correction
 
     final_pred = np.clip(final_pred, 1.5, 8.0)
