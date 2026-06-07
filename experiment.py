@@ -597,6 +597,11 @@ def train_model(model_config, processed_data):
     if tw > 0:
         val_ensemble_pred /= tw
 
+    # Compute per-model val MAEs for weighting
+    val_maes = {}
+    for name, pred in all_val_preds.items():
+        val_maes[name] = mean_absolute_error(val_pec50, pred)
+
     # Compute uncertainty from model std
     val_pred_array = np.array([all_val_preds[n] for n in all_val_preds])
     val_pred_std = val_pred_array.std(axis=0)
@@ -681,6 +686,7 @@ def train_model(model_config, processed_data):
         "osmordred_test": osmordred_test,
         "ensemble_weights": ensemble_weights,
         "ensemble_mae": ensemble_mae,
+        "val_maes": val_maes,
         "test": test,
         "corr_params": best_params if corr_mae < ensemble_mae else (0.0, 3.70, 0.5, 0.28, 0.2, 2.5),
         "corr_improvement": corr_mae - ensemble_mae,
@@ -731,14 +737,23 @@ def evaluate_model(model, test=None):
         X_scaled = scaler.transform(X_test)
         sk_test_preds[f"sklearn_{name}"] = model_inst.predict(X_scaled)
 
-    # Ensemble - use simple averaging (more robust than Ridge)
+    # Ensemble - weighted average (inverse val MAE weighting to reduce weak model dilution)
     all_preds = {
         "chemprop_mt": chemprop_mt_pred,
         "chemeleon": ch_preds,
     }
     all_preds.update(sk_test_preds)
 
-    final_pred = np.mean(list(all_preds.values()), axis=0)
+    # Use validation MAE-based weights
+    val_maes = model.get("val_maes", None)
+    if val_maes:
+        inv_maes = {k: 1.0 / v for k, v in val_maes.items() if k in all_preds}
+        total = sum(inv_maes.values())
+        weights = {k: v / total for k, v in inv_maes.items()}
+        final_pred = sum(weights[k] * all_preds[k] for k in weights)
+        print(f"  Ensemble weights: { {k: f'{v:.3f}' for k, v in weights.items()} }")
+    else:
+        final_pred = np.mean(list(all_preds.values()), axis=0)
 
     # Uncertainty-aware Gaussian correction (fixed optimal params):
     from math import exp
