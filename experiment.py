@@ -631,19 +631,18 @@ def evaluate_model(model, test=None):
         X_scaled = scaler.transform(X_test)
         sk_test_preds[f"sklearn_{name}"] = model_inst.predict(X_scaled)
 
-    # Ensemble - use simple averaging (more robust than Ridge)
+    # Ensemble - 2-model (Chemprop + CheMeleon only, drop noisy XGBoost)
     all_preds = {
         "chemprop_mt": chemprop_mt_pred,
         "chemeleon": ch_preds,
     }
-    all_preds.update(sk_test_preds)
 
     final_pred = np.mean(list(all_preds.values()), axis=0)
 
     # Uncertainty-aware Gaussian correction (validated best):
     pred_array = np.array([all_preds[n] for n in all_preds])
     pred_std = pred_array.std(axis=0)
-    uncertainty_scale = np.clip(pred_std / 0.28, 0.3, 2.5)
+    uncertainty_scale = np.clip(pred_std / 0.20, 0.3, 2.5)
 
     from math import exp
     gaussian = np.array([exp(-0.5 * ((p - 3.75) / 0.5) ** 2) for p in final_pred])
