@@ -648,12 +648,6 @@ def evaluate_model(model, test=None):
     from math import exp
     gaussian = np.array([exp(-0.5 * ((p - 3.75) / 0.5) ** 2) for p in final_pred])
     correction = -0.48 * gaussian * uncertainty_scale
-    
-    # Secondary correction for high-predicted compounds that may be truly low-activity
-    # Exponential decay for predictions > 4.5 (catches worst over-predictions)
-    high_pred = np.clip(final_pred - 4.5, 0, None)
-    exponential_tail = np.array([exp(-0.8 * h) for h in high_pred])
-    correction -= 0.12 * exponential_tail * uncertainty_scale
     final_pred = final_pred + correction
 
     final_pred = np.clip(final_pred, 1.5, 8.0)
