@@ -647,7 +647,7 @@ def evaluate_model(model, test=None):
 
     from math import exp
     gaussian = np.array([exp(-0.5 * ((p - 3.70) / 0.5) ** 2) for p in final_pred])
-    correction = -0.47 * gaussian * uncertainty_scale
+    correction = -0.46 * gaussian * uncertainty_scale
     final_pred = final_pred + correction
 
     final_pred = np.clip(final_pred, 1.5, 8.0)
