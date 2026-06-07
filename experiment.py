@@ -643,11 +643,11 @@ def evaluate_model(model, test=None):
     # Uncertainty-aware Gaussian correction (validated best):
     pred_array = np.array([all_preds[n] for n in all_preds])
     pred_std = pred_array.std(axis=0)
-    uncertainty_scale = np.clip(pred_std / 0.28, 0.2, 3.0)
+    uncertainty_scale = np.clip(pred_std / 0.28, 0.2, 2.5)
 
     from math import exp
     gaussian = np.array([exp(-0.5 * ((p - 3.70) / 0.5) ** 2) for p in final_pred])
-    correction = -0.45 * gaussian * uncertainty_scale
+    correction = -0.46 * gaussian * uncertainty_scale
     final_pred = final_pred + correction
 
     final_pred = np.clip(final_pred, 1.5, 8.0)
