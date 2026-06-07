@@ -478,7 +478,9 @@ def train_model(model_config, processed_data):
     print("Loading osmordred features...")
     osmordred_train = pd.read_parquet("train_osmordred_features.parquet")
     osmordred_test = pd.read_parquet("test_phase1_osmordred_features.parquet")
-    # Drop high-null columns once
+    # Deduplicate by SMILES (mean of duplicates) then drop high-null columns
+    osmordred_train = osmordred_train.groupby("SMILES", as_index=False).mean(numeric_only=True)
+    osmordred_test = osmordred_test.groupby("SMILES", as_index=False).mean(numeric_only=True)
     feat_cols = [c for c in osmordred_train.columns if c != "SMILES"]
     null_ratio = osmordred_train[feat_cols].isnull().mean()
     keep_cols = null_ratio[null_ratio <= 0.1].index.tolist()
