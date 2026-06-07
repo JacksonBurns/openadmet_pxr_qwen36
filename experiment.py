@@ -176,6 +176,42 @@ def compute_physchem_descriptors(smis, n_jobs=-1):
     return np.array(fps)
 
 
+def load_osmordred_features(smis, osmordred_df):
+    """Load osmordred features for given SMILES, handling nulls."""
+    osmordred = osmordred_df.set_index("SMILES").loc[smis].reset_index()
+    feat_cols = [c for c in osmordred.columns if c != "SMILES"]
+    features = osmordred[feat_cols].values.astype(np.float32)
+    mask = np.isnan(features)
+    col_null_ratio = mask.sum(axis=0) / len(features)
+    drop_cols = col_null_ratio > 0.1
+    features = features[:, ~drop_cols]
+    remaining_nan = np.isnan(features)
+    col_means = np.nanmean(features, axis=0)
+    col_means = np.where(np.isnan(col_means), 0, col_means)
+    features = np.where(remaining_nan, col_means, features)
+    return features
+
+
+def compute_osmordred_augmented(smis, osmordred_df, n_jobs=-1):
+    """Compute all fingerprints + osmordred descriptors."""
+    fps = np.hstack([
+        compute_morgan_fps(smis, radius=1, n_bits=2048, n_jobs=n_jobs),
+        compute_morgan_count_fps(smis, radius=1, n_bits=2048, n_jobs=n_jobs),
+        compute_morgan_count_fps(smis, radius=3, n_bits=2048, n_jobs=n_jobs),
+        compute_atompair_fps(smis, n_bits=2048, n_jobs=n_jobs),
+        compute_torsion_fps(smis, n_bits=2048, n_jobs=n_jobs),
+        compute_maccs_fps(smis, n_jobs=n_jobs),
+        compute_physchem_descriptors(smis, n_jobs=n_jobs),
+        load_osmordred_features(smis, osmordred_df),
+    ])
+    return fps
+
+
+def compute_osmordred_only(smis, osmordred_df):
+    """Compute osmordred features only."""
+    return load_osmordred_features(smis, osmordred_df)
+
+
 def train_chemeleon(smis, ys, val_smis, val_ys, batch_size=64,
                     max_epochs=80, checkpoint_dir="chemeleon", n_tasks=1):
     """Finetune CheMeleon foundation model for regression."""
@@ -438,6 +474,18 @@ def train_model(model_config, processed_data):
     primary_clean, test = processed_data
     os.makedirs("checkpoints/chemprop_mt", exist_ok=True)
 
+    # Load osmordred features
+    print("Loading osmordred features...")
+    osmordred_train = pd.read_parquet("train_osmordred_features.parquet")
+    osmordred_test = pd.read_parquet("test_phase1_osmordred_features.parquet")
+    # Drop high-null columns once
+    feat_cols = [c for c in osmordred_train.columns if c != "SMILES"]
+    null_ratio = osmordred_train[feat_cols].isnull().mean()
+    keep_cols = feat_cols[null_ratio <= 0.1]
+    osmordred_train = osmordred_train[["SMILES"] + keep_cols]
+    osmordred_test = osmordred_test[["SMILES"] + keep_cols]
+    print(f"  Osmordred: {len(keep_cols)} features retained")
+
     smis = primary_clean["SMILES"].values
     y_pEC50 = primary_clean["pEC50"].values
     y_Emax = primary_clean["Emax"].values
@@ -478,24 +526,17 @@ def train_model(model_config, processed_data):
     )
     print(f"    MAE (pEC50): {mean_absolute_error(val_pec50, ch_preds):.4f}")
 
-    # Sklearn with diverse fingerprints
+    # Sklearn with diverse fingerprints + osmordred
     sk_trained = {}
     sk_preds_dict = {}
     fp_configs = [
-        ("concat", lambda s: np.hstack([
-            compute_morgan_fps(s, radius=1, n_bits=2048),
-            compute_morgan_count_fps(s, radius=1, n_bits=2048),
-            compute_morgan_count_fps(s, radius=3, n_bits=2048),
-            compute_atompair_fps(s, n_bits=2048),
-            compute_torsion_fps(s, n_bits=2048),
-            compute_maccs_fps(s),
-            compute_physchem_descriptors(s),
-        ])),
+        ("concat_osm", lambda s: compute_osmordred_augmented(s, osmordred_train)),
     ]
     for name, fp_fn in fp_configs:
-        print(f"\n  Sklearn ({name}, 6372 feat)...")
+        print(f"\n  Sklearn ({name})...")
         X_train_fp = fp_fn(train_smis)
         X_val_fp = fp_fn(val_smis)
+        print(f"    Feature dim: {X_train_fp.shape[1]}")
         sk_tr, sk_pr, sk_m = train_sklearn_model(
             X_train_fp, train_pec50, X_val_fp, val_pec50
         )
@@ -591,6 +632,7 @@ def train_model(model_config, processed_data):
         "chemeleon_trainer": final_ch_trainer,
         "chemeleon_cp": final_ch_cp,
         "sklearn_finals": sklearn_finals,
+        "osmordred_test": osmordred_test,
         "ensemble_weights": ensemble_weights,
         "ensemble_mae": ensemble_mae,
         "test": test,
@@ -624,10 +666,10 @@ def evaluate_model(model, test=None):
     ch_preds = torch.cat(ch_preds, dim=0).cpu().numpy().ravel()
     print(f"  CheMeleon: [{ch_preds.min():.2f}, {ch_preds.max():.2f}]")
 
-     # Sklearn at multiple fingerprint types
+     # Sklearn at multiple fingerprint types (use osmordred_test for test data)
     sk_test_preds = {}
     for name, (model_inst, scaler, fp_fn) in model["sklearn_finals"].items():
-        X_test = fp_fn(test_smiles)
+        X_test = compute_osmordred_augmented(test_smiles, model["osmordred_test"])
         X_scaled = scaler.transform(X_test)
         sk_test_preds[f"sklearn_{name}"] = model_inst.predict(X_scaled)
 
