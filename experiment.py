@@ -478,20 +478,6 @@ def train_model(model_config, processed_data):
     primary_clean, test = processed_data
     os.makedirs("checkpoints/chemprop_mt", exist_ok=True)
 
-    # Load osmordred features
-    print("Loading osmordred features...")
-    osmordred_train = pd.read_parquet("train_osmordred_features.parquet")
-    osmordred_test = pd.read_parquet("test_phase1_osmordred_features.parquet")
-    # Deduplicate by SMILES (mean of duplicates) then drop high-null columns
-    osmordred_train = osmordred_train.groupby("SMILES", as_index=False).mean(numeric_only=True)
-    osmordred_test = osmordred_test.groupby("SMILES", as_index=False).mean(numeric_only=True)
-    feat_cols = [c for c in osmordred_train.columns if c != "SMILES"]
-    null_ratio = osmordred_train[feat_cols].isnull().mean()
-    keep_cols = null_ratio[null_ratio <= 0.1].index.tolist()
-    osmordred_train = osmordred_train[["SMILES"] + keep_cols]
-    osmordred_test = osmordred_test[["SMILES"] + keep_cols]
-    print(f"  Osmordred: {len(keep_cols)} features retained")
-
     smis = primary_clean["SMILES"].values
     y_pEC50 = primary_clean["pEC50"].values
     y_Emax = primary_clean["Emax"].values
@@ -532,7 +518,7 @@ def train_model(model_config, processed_data):
     )
     print(f"    MAE (pEC50): {mean_absolute_error(val_pec50, ch_preds):.4f}")
 
-    # Sklearn with fingerprints (baseline) + osmordred-only (4th model)
+    # Sklearn with fingerprints (baseline)
     sk_trained = {}
     sk_preds_dict = {}
 
@@ -560,18 +546,6 @@ def train_model(model_config, processed_data):
     sk_preds_dict["sklearn_concat"] = sk_pr_fp
     print(f"    Sklearn concat MAE: {sk_m_fp:.4f}")
 
-    # Osmordred-only XGBoost
-    print("\n  Sklearn (osmordred)...")
-    X_train_osm = compute_osmordred_only(train_smis, osmordred_train)
-    X_val_osm = compute_osmordred_only(val_smis, osmordred_train)
-    print(f"    Osmordred feature dim: {X_train_osm.shape[1]}")
-    sk_tr_osm, sk_pr_osm, sk_m_osm = train_sklearn_model(
-        X_train_osm, train_pec50, X_val_osm, val_pec50
-    )
-    sk_trained["osmordred"] = (sk_tr_osm, None)
-    sk_preds_dict["sklearn_osmordred"] = sk_pr_osm
-    print(f"    Sklearn osmordred MAE: {sk_m_osm:.4f}")
-
     # Ensemble weights
     print("\n--- Optimizing Ensemble Weights ---")
     all_val_preds = {
@@ -597,33 +571,32 @@ def train_model(model_config, processed_data):
     if tw > 0:
         val_ensemble_pred /= tw
 
-    # Compute per-model val MAEs for weighting
-    val_maes = {}
-    for name, pred in all_val_preds.items():
-        val_maes[name] = mean_absolute_error(val_pec50, pred)
-
-    # Compute uncertainty from model std
-    val_pred_array = np.array([all_val_preds[n] for n in all_val_preds])
-    val_pred_std = val_pred_array.std(axis=0)
+    # Find optimal sigmoid correction parameters via grid search
+    from scipy.special import expit
+    val_ensemble_pred = np.zeros(len(val_pec50))
+    tw = 0
+    for name, weight in ensemble_weights.items():
+        if name in all_val_preds:
+            val_ensemble_pred += weight * all_val_preds[name]
+            tw += weight
+    if tw > 0:
+        val_ensemble_pred /= tw
 
     best_corr_mae = ensemble_mae
-    best_params = (0.0, 0.0, 0.5, 0.28, 0.2, 2.5)  # mag, center, width, unc_norm, clip_lo, clip_hi
-    for mag in np.arange(0.10, 0.60, 0.05):
-        for center in np.arange(3.30, 4.00, 0.05):
-            for width in [0.4, 0.5, 0.6]:
-                for unc_norm in [0.20, 0.25, 0.28, 0.30, 0.35]:
-                    unc_scale = np.clip(val_pred_std / unc_norm, 0.2, 2.5)
-                    gaussian = np.array([math_exp(-0.5 * ((p - center) / width) ** 2) for p in val_ensemble_pred])
-                    correction = -mag * gaussian * unc_scale
-                    corrected = val_ensemble_pred + correction
-                    corrected = np.clip(corrected, 1.5, 8.0)
-                    m = mean_absolute_error(val_pec50, corrected)
-                    if m < best_corr_mae:
-                        best_corr_mae = m
-                        best_params = (mag, center, width, unc_norm, 0.2, 2.5)
+    best_params = (0.0, 0.0, 0.0)  # magnitude, center, scale
+    for mag in np.arange(0.05, 0.55, 0.05):
+        for center in np.arange(3.0, 4.5, 0.25):
+            for scale in [0.3, 0.4, 0.5, 0.6, 0.8]:
+                corr = -mag * expit(-(val_ensemble_pred - center) / scale)
+                corrected = val_ensemble_pred + corr
+                corrected = np.clip(corrected, 1.5, 8.0)
+                m = mean_absolute_error(val_pec50, corrected)
+                if m < best_corr_mae:
+                    best_corr_mae = m
+                    best_params = (mag, center, scale)
 
     corr_mae = best_corr_mae
-    print(f"  Gaussian correction val MAE: {corr_mae:.4f} (params: mag={best_params[0]:.2f}, center={best_params[1]:.2f}, width={best_params[2]:.1f}, unc_norm={best_params[3]:.2f})")
+    print(f"  Sigmoid correction val MAE: {corr_mae:.4f} (params: mag={best_params[0]:.2f}, center={best_params[1]:.2f}, scale={best_params[2]:.2f})")
 
     # -------------------------------------------------------------------------
     # Phase 2: Train final models on FULL data for test predictions
@@ -658,18 +631,15 @@ def train_model(model_config, processed_data):
     sklearn_finals = {}
     for name, (trained, _) in sk_trained.items():
         print(f"  Sklearn {name} GB...")
-        if name == "osmordred":
-            X_full = compute_osmordred_only(smis, osmordred_train)
-        else:
-            X_full = np.hstack([
-                compute_morgan_fps(smis, radius=1, n_bits=2048),
-                compute_morgan_count_fps(smis, radius=1, n_bits=2048),
-                compute_morgan_count_fps(smis, radius=3, n_bits=2048),
-                compute_atompair_fps(smis, n_bits=2048),
-                compute_torsion_fps(smis, n_bits=2048),
-                compute_maccs_fps(smis),
-                compute_physchem_descriptors(smis),
-            ])
+        X_full = np.hstack([
+            compute_morgan_fps(smis, radius=1, n_bits=2048),
+            compute_morgan_count_fps(smis, radius=1, n_bits=2048),
+            compute_morgan_count_fps(smis, radius=3, n_bits=2048),
+            compute_atompair_fps(smis, n_bits=2048),
+            compute_torsion_fps(smis, n_bits=2048),
+            compute_maccs_fps(smis),
+            compute_physchem_descriptors(smis),
+        ])
         model_orig, _ = trained
         scaler_final = StandardScaler()
         X_scaled = scaler_final.fit_transform(X_full)
@@ -686,9 +656,8 @@ def train_model(model_config, processed_data):
         "osmordred_test": osmordred_test,
         "ensemble_weights": ensemble_weights,
         "ensemble_mae": ensemble_mae,
-        "val_maes": val_maes,
         "test": test,
-        "corr_params": best_params if corr_mae < ensemble_mae else (0.0, 3.70, 0.5, 0.28, 0.2, 2.5),
+        "corr_params": best_params if corr_mae < ensemble_mae else (0.0, 0.0, 0.0),
         "corr_improvement": corr_mae - ensemble_mae,
     }
 
@@ -720,40 +689,27 @@ def evaluate_model(model, test=None):
 
      # Sklearn predictions
     sk_test_preds = {}
-    osm_test = model["osmordred_test"]
     for name, (model_inst, scaler) in model["sklearn_finals"].items():
-        if name == "osmordred":
-            X_test = compute_osmordred_only(test_smiles, osm_test)
-        else:
-            X_test = np.hstack([
-                compute_morgan_fps(test_smiles, radius=1, n_bits=2048),
-                compute_morgan_count_fps(test_smiles, radius=1, n_bits=2048),
-                compute_morgan_count_fps(test_smiles, radius=3, n_bits=2048),
-                compute_atompair_fps(test_smiles, n_bits=2048),
-                compute_torsion_fps(test_smiles, n_bits=2048),
-                compute_maccs_fps(test_smiles),
-                compute_physchem_descriptors(test_smiles),
-            ])
+        X_test = np.hstack([
+            compute_morgan_fps(test_smiles, radius=1, n_bits=2048),
+            compute_morgan_count_fps(test_smiles, radius=1, n_bits=2048),
+            compute_morgan_count_fps(test_smiles, radius=3, n_bits=2048),
+            compute_atompair_fps(test_smiles, n_bits=2048),
+            compute_torsion_fps(test_smiles, n_bits=2048),
+            compute_maccs_fps(test_smiles),
+            compute_physchem_descriptors(test_smiles),
+        ])
         X_scaled = scaler.transform(X_test)
         sk_test_preds[f"sklearn_{name}"] = model_inst.predict(X_scaled)
 
-    # Ensemble - weighted average (inverse val MAE weighting to reduce weak model dilution)
+    # Ensemble - simple averaging (more robust than Ridge)
     all_preds = {
         "chemprop_mt": chemprop_mt_pred,
         "chemeleon": ch_preds,
     }
     all_preds.update(sk_test_preds)
 
-    # Use validation MAE-based weights
-    val_maes = model.get("val_maes", None)
-    if val_maes:
-        inv_maes = {k: 1.0 / v for k, v in val_maes.items() if k in all_preds}
-        total = sum(inv_maes.values())
-        weights = {k: v / total for k, v in inv_maes.items()}
-        final_pred = sum(weights[k] * all_preds[k] for k in weights)
-        print(f"  Ensemble weights: { {k: f'{v:.3f}' for k, v in weights.items()} }")
-    else:
-        final_pred = np.mean(list(all_preds.values()), axis=0)
+    final_pred = np.mean(list(all_preds.values()), axis=0)
 
     # Uncertainty-aware Gaussian correction (fixed optimal params):
     from math import exp
