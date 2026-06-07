@@ -536,12 +536,20 @@ def train_model(model_config, processed_data):
     osm_scaler = StandardScaler()
     X_train_osm_sc = osm_scaler.fit_transform(X_train_osm)
     X_val_osm_sc = osm_scaler.transform(X_val_osm)
-    ridge = Ridge(alpha=10.0, random_state=SEED)
-    ridge.fit(X_train_osm_sc, train_pec50)
-    ridge_pr = ridge.predict(X_val_osm_sc)
-    ridge_m = mean_absolute_error(val_pec50, ridge_pr)
-    print(f"    Ridge osmordred MAE: {ridge_m:.4f}")
-    sk_preds_dict["ridge_osmordred"] = ridge_pr
+    best_ridge_m = 999
+    best_alpha = 10.0
+    best_ridge_pr = None
+    for alpha in [1.0, 3.0, 5.0, 10.0, 20.0, 50.0, 100.0]:
+        ridge = Ridge(alpha=alpha, random_state=SEED)
+        ridge.fit(X_train_osm_sc, train_pec50)
+        pr = ridge.predict(X_val_osm_sc)
+        m = mean_absolute_error(val_pec50, pr)
+        if m < best_ridge_m:
+            best_ridge_m = m
+            best_alpha = alpha
+            best_ridge_pr = pr
+    print(f"    Ridge osmordred MAE: {best_ridge_m:.4f} (alpha={best_alpha})")
+    sk_preds_dict["ridge_osmordred"] = best_ridge_pr
 
     # Ensemble weights
     print("\n--- Optimizing Ensemble Weights ---")
@@ -649,14 +657,14 @@ def train_model(model_config, processed_data):
     X_full_osm = load_osmordred_features(smis, osmordred_train)
     osm_scaler_final = StandardScaler()
     X_full_osm_sc = osm_scaler_final.fit_transform(X_full_osm)
-    ridge_final = Ridge(alpha=10.0, random_state=SEED)
+    ridge_final = Ridge(alpha=best_alpha, random_state=SEED)
     ridge_final.fit(X_full_osm_sc, y_pEC50)
 
     # Load test osmordred
     osmordred_test = pd.read_parquet("test_phase1_osmordred_features.parquet")
     osmordred_test = osmordred_test.groupby("SMILES", as_index=False).mean(numeric_only=True)
 
-    return {
+  return {
         "chemprop_mt_trainer": final_mt_trainer,
         "chemprop_mt_cp": final_mt_cp,
         "chemeleon_trainer": final_ch_trainer,
@@ -665,12 +673,6 @@ def train_model(model_config, processed_data):
         "ridge_final": ridge_final,
         "ridge_scaler": osm_scaler_final,
         "osmordred_test": osmordred_test,
-        "chemprop_mt_trainer": final_mt_trainer,
-        "chemprop_mt_cp": final_mt_cp,
-        "chemeleon_trainer": final_ch_trainer,
-        "chemeleon_cp": final_ch_cp,
-        "sklearn_finals": sklearn_finals,
- 
         "ensemble_weights": ensemble_weights,
         "ensemble_mae": ensemble_mae,
         "test": test,
@@ -734,13 +736,13 @@ def evaluate_model(model, test=None):
 
     final_pred = np.mean(list(all_preds.values()), axis=0)
 
-    # Uncertainty-aware Gaussian correction (fixed optimal params):
+    # Uncertainty-aware Gaussian correction (optimized for 4-model ensemble):
     from math import exp
     pred_array = np.array([all_preds[n] for n in all_preds])
     pred_std = pred_array.std(axis=0)
-    uncertainty_scale = np.clip(pred_std / 0.28, 0.2, 2.5)
+    uncertainty_scale = np.clip(pred_std / 0.30, 0.2, 2.5)
     gaussian = np.array([exp(-0.5 * ((p - 3.70) / 0.5) ** 2) for p in final_pred])
-    correction = -0.46 * gaussian * uncertainty_scale
+    correction = -0.42 * gaussian * uncertainty_scale
     final_pred = final_pred + correction
 
     final_pred = np.clip(final_pred, 1.5, 8.0)
