@@ -653,7 +653,7 @@ def train_model(model_config, processed_data):
         "chemeleon_trainer": final_ch_trainer,
         "chemeleon_cp": final_ch_cp,
         "sklearn_finals": sklearn_finals,
-        "osmordred_test": osmordred_test,
+ 
         "ensemble_weights": ensemble_weights,
         "ensemble_mae": ensemble_mae,
         "test": test,
