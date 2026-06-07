@@ -481,7 +481,7 @@ def train_model(model_config, processed_data):
     # Drop high-null columns once
     feat_cols = [c for c in osmordred_train.columns if c != "SMILES"]
     null_ratio = osmordred_train[feat_cols].isnull().mean()
-    keep_cols = feat_cols[null_ratio <= 0.1]
+    keep_cols = null_ratio[null_ratio <= 0.1].index.tolist()
     osmordred_train = osmordred_train[["SMILES"] + keep_cols]
     osmordred_test = osmordred_test[["SMILES"] + keep_cols]
     print(f"  Osmordred: {len(keep_cols)} features retained")
