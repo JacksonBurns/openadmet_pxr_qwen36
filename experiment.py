@@ -638,7 +638,7 @@ def evaluate_model(model, test=None):
     }
     all_preds.update(sk_test_preds)
 
-    final_pred = np.mean(list(all_preds.values()), axis=0)
+    final_pred = np.median(list(all_preds.values()), axis=0)
 
     # Uncertainty-aware Gaussian correction (validated best):
     pred_array = np.array([all_preds[n] for n in all_preds])
