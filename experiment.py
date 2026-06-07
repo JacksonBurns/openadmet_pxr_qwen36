@@ -532,11 +532,11 @@ def train_model(model_config, processed_data):
     )
     print(f"    MAE (pEC50): {mean_absolute_error(val_pec50, ch_preds):.4f}")
 
-    # Sklearn with fingerprints + selected osmordred features
+    # Sklearn with fingerprints (baseline) + osmordred-only (4th model)
     sk_trained = {}
     sk_preds_dict = {}
 
-    print("\n  Sklearn (fingerprints + osmordred)...")
+    print("\n  Sklearn (fingerprints)...")
     X_train_fp = np.hstack([
         compute_morgan_fps(train_smis, radius=1, n_bits=2048),
         compute_morgan_count_fps(train_smis, radius=1, n_bits=2048),
@@ -555,22 +555,22 @@ def train_model(model_config, processed_data):
         compute_maccs_fps(val_smis),
         compute_physchem_descriptors(val_smis),
     ])
-    # Select top osmordred features by correlation with pEC50
+    sk_tr_fp, sk_pr_fp, sk_m_fp = train_sklearn_model(X_train_fp, train_pec50, X_val_fp, val_pec50)
+    sk_trained["concat"] = (sk_tr_fp, None)
+    sk_preds_dict["sklearn_concat"] = sk_pr_fp
+    print(f"    Sklearn concat MAE: {sk_m_fp:.4f}")
+
+    # Osmordred-only XGBoost
+    print("\n  Sklearn (osmordred)...")
     X_train_osm = compute_osmordred_only(train_smis, osmordred_train)
     X_val_osm = compute_osmordred_only(val_smis, osmordred_train)
-    correlations = np.array([np.abs(np.corrcoef(X_train_osm[:, i], train_pec50)[0, 1])
-                             for i in range(X_train_osm.shape[1])])
-    top_k = 200
-    top_idx = np.argsort(correlations)[-top_k:]
-    X_train_combined = np.hstack([X_train_fp, X_train_osm[:, top_idx]])
-    X_val_combined = np.hstack([X_val_fp, X_val_osm[:, top_idx]])
-    print(f"    Combined features: {X_train_combined.shape[1]} (fp: {X_train_fp.shape[1]}, osm: {top_k})")
-    sk_tr_combined, sk_pr_combined, sk_m_combined = train_sklearn_model(
-        X_train_combined, train_pec50, X_val_combined, val_pec50
+    print(f"    Osmordred feature dim: {X_train_osm.shape[1]}")
+    sk_tr_osm, sk_pr_osm, sk_m_osm = train_sklearn_model(
+        X_train_osm, train_pec50, X_val_osm, val_pec50
     )
-    sk_trained["concat_osm"] = (sk_tr_combined, top_idx)
-    sk_preds_dict["sklearn_concat_osm"] = sk_pr_combined
-    print(f"    Sklearn concat+osmordred MAE: {sk_m_combined:.4f}")
+    sk_trained["osmordred"] = (sk_tr_osm, None)
+    sk_preds_dict["sklearn_osmordred"] = sk_pr_osm
+    print(f"    Sklearn osmordred MAE: {sk_m_osm:.4f}")
 
     # Ensemble weights
     print("\n--- Optimizing Ensemble Weights ---")
@@ -586,8 +586,8 @@ def train_model(model_config, processed_data):
     for name, w in sorted(ensemble_weights.items(), key=lambda x: -x[1]):
         print(f"    {name}: {w:.4f}")
 
-    # Find optimal sigmoid correction parameters via grid search
-    from scipy.special import expit
+    # Find optimal Gaussian correction parameters via grid search (with uncertainty scaling)
+    from math import exp as math_exp
     val_ensemble_pred = np.zeros(len(val_pec50))
     tw = 0
     for name, weight in ensemble_weights.items():
@@ -597,21 +597,28 @@ def train_model(model_config, processed_data):
     if tw > 0:
         val_ensemble_pred /= tw
 
+    # Compute uncertainty from model std
+    val_pred_array = np.array([all_val_preds[n] for n in all_val_preds])
+    val_pred_std = val_pred_array.std(axis=0)
+
     best_corr_mae = ensemble_mae
-    best_params = (0.0, 0.0, 0.0)  # magnitude, center, scale
-    for mag in np.arange(0.05, 0.55, 0.05):
-        for center in np.arange(3.0, 4.5, 0.25):
-            for scale in [0.3, 0.4, 0.5, 0.6, 0.8]:
-                corr = -mag * expit(-(val_ensemble_pred - center) / scale)
-                corrected = val_ensemble_pred + corr
-                corrected = np.clip(corrected, 1.5, 8.0)
-                m = mean_absolute_error(val_pec50, corrected)
-                if m < best_corr_mae:
-                    best_corr_mae = m
-                    best_params = (mag, center, scale)
+    best_params = (0.0, 0.0, 0.5, 0.28, 0.2, 2.5)  # mag, center, width, unc_norm, clip_lo, clip_hi
+    for mag in np.arange(0.10, 0.60, 0.05):
+        for center in np.arange(3.30, 4.00, 0.05):
+            for width in [0.4, 0.5, 0.6]:
+                for unc_norm in [0.20, 0.25, 0.28, 0.30, 0.35]:
+                    unc_scale = np.clip(val_pred_std / unc_norm, 0.2, 2.5)
+                    gaussian = np.array([math_exp(-0.5 * ((p - center) / width) ** 2) for p in val_ensemble_pred])
+                    correction = -mag * gaussian * unc_scale
+                    corrected = val_ensemble_pred + correction
+                    corrected = np.clip(corrected, 1.5, 8.0)
+                    m = mean_absolute_error(val_pec50, corrected)
+                    if m < best_corr_mae:
+                        best_corr_mae = m
+                        best_params = (mag, center, width, unc_norm, 0.2, 2.5)
 
     corr_mae = best_corr_mae
-    print(f"  Sigmoid correction val MAE: {corr_mae:.4f} (params: mag={best_params[0]:.2f}, center={best_params[1]:.2f}, scale={best_params[2]:.2f})")
+    print(f"  Gaussian correction val MAE: {corr_mae:.4f} (params: mag={best_params[0]:.2f}, center={best_params[1]:.2f}, width={best_params[2]:.1f}, unc_norm={best_params[3]:.2f})")
 
     # -------------------------------------------------------------------------
     # Phase 2: Train final models on FULL data for test predictions
@@ -644,25 +651,26 @@ def train_model(model_config, processed_data):
 
     # Sklearn on full data
     sklearn_finals = {}
-    for name, (trained, top_idx) in sk_trained.items():
+    for name, (trained, _) in sk_trained.items():
         print(f"  Sklearn {name} GB...")
-        X_full_fp = np.hstack([
-            compute_morgan_fps(smis, radius=1, n_bits=2048),
-            compute_morgan_count_fps(smis, radius=1, n_bits=2048),
-            compute_morgan_count_fps(smis, radius=3, n_bits=2048),
-            compute_atompair_fps(smis, n_bits=2048),
-            compute_torsion_fps(smis, n_bits=2048),
-            compute_maccs_fps(smis),
-            compute_physchem_descriptors(smis),
-        ])
-        X_full_osm = compute_osmordred_only(smis, osmordred_train)
-        X_full = np.hstack([X_full_fp, X_full_osm[:, top_idx]])
+        if name == "osmordred":
+            X_full = compute_osmordred_only(smis, osmordred_train)
+        else:
+            X_full = np.hstack([
+                compute_morgan_fps(smis, radius=1, n_bits=2048),
+                compute_morgan_count_fps(smis, radius=1, n_bits=2048),
+                compute_morgan_count_fps(smis, radius=3, n_bits=2048),
+                compute_atompair_fps(smis, n_bits=2048),
+                compute_torsion_fps(smis, n_bits=2048),
+                compute_maccs_fps(smis),
+                compute_physchem_descriptors(smis),
+            ])
         model_orig, _ = trained
         scaler_final = StandardScaler()
         X_scaled = scaler_final.fit_transform(X_full)
         model_final = type(model_orig)(**model_orig.get_params())
         model_final.fit(X_scaled, y_pEC50)
-        sklearn_finals[name] = (model_final, scaler_final, top_idx)
+        sklearn_finals[name] = (model_final, scaler_final)
 
     return {
         "chemprop_mt_trainer": final_mt_trainer,
@@ -674,7 +682,7 @@ def train_model(model_config, processed_data):
         "ensemble_weights": ensemble_weights,
         "ensemble_mae": ensemble_mae,
         "test": test,
-        "corr_params": best_params if corr_mae < ensemble_mae else (0.0, 0.0, 0.0),
+        "corr_params": best_params if corr_mae < ensemble_mae else (0.0, 3.70, 0.5, 0.28, 0.2, 2.5),
         "corr_improvement": corr_mae - ensemble_mae,
     }
 
@@ -707,18 +715,19 @@ def evaluate_model(model, test=None):
      # Sklearn predictions
     sk_test_preds = {}
     osm_test = model["osmordred_test"]
-    for name, (model_inst, scaler, top_idx) in model["sklearn_finals"].items():
-        X_test_fp = np.hstack([
-            compute_morgan_fps(test_smiles, radius=1, n_bits=2048),
-            compute_morgan_count_fps(test_smiles, radius=1, n_bits=2048),
-            compute_morgan_count_fps(test_smiles, radius=3, n_bits=2048),
-            compute_atompair_fps(test_smiles, n_bits=2048),
-            compute_torsion_fps(test_smiles, n_bits=2048),
-            compute_maccs_fps(test_smiles),
-            compute_physchem_descriptors(test_smiles),
-        ])
-        X_test_osm = compute_osmordred_only(test_smiles, osm_test)
-        X_test = np.hstack([X_test_fp, X_test_osm[:, top_idx]])
+    for name, (model_inst, scaler) in model["sklearn_finals"].items():
+        if name == "osmordred":
+            X_test = compute_osmordred_only(test_smiles, osm_test)
+        else:
+            X_test = np.hstack([
+                compute_morgan_fps(test_smiles, radius=1, n_bits=2048),
+                compute_morgan_count_fps(test_smiles, radius=1, n_bits=2048),
+                compute_morgan_count_fps(test_smiles, radius=3, n_bits=2048),
+                compute_atompair_fps(test_smiles, n_bits=2048),
+                compute_torsion_fps(test_smiles, n_bits=2048),
+                compute_maccs_fps(test_smiles),
+                compute_physchem_descriptors(test_smiles),
+            ])
         X_scaled = scaler.transform(X_test)
         sk_test_preds[f"sklearn_{name}"] = model_inst.predict(X_scaled)
 
@@ -731,14 +740,14 @@ def evaluate_model(model, test=None):
 
     final_pred = np.mean(list(all_preds.values()), axis=0)
 
-    # Uncertainty-aware Gaussian correction (validated best):
+    # Uncertainty-aware Gaussian correction (optimized via grid search):
+    corr_params = model["corr_params"]
+    mag, center, width, unc_norm, clip_lo, clip_hi = corr_params
     pred_array = np.array([all_preds[n] for n in all_preds])
     pred_std = pred_array.std(axis=0)
-    uncertainty_scale = np.clip(pred_std / 0.28, 0.2, 2.5)
-
-    from math import exp
-    gaussian = np.array([exp(-0.5 * ((p - 3.70) / 0.5) ** 2) for p in final_pred])
-    correction = -0.46 * gaussian * uncertainty_scale
+    uncertainty_scale = np.clip(pred_std / unc_norm, clip_lo, clip_hi)
+    gaussian = np.array([math_exp(-0.5 * ((p - center) / width) ** 2) for p in final_pred])
+    correction = -mag * gaussian * uncertainty_scale
     final_pred = final_pred + correction
 
     final_pred = np.clip(final_pred, 1.5, 8.0)
