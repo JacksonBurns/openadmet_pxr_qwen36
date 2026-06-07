@@ -664,7 +664,7 @@ def train_model(model_config, processed_data):
     osmordred_test = pd.read_parquet("test_phase1_osmordred_features.parquet")
     osmordred_test = osmordred_test.groupby("SMILES", as_index=False).mean(numeric_only=True)
 
-  return {
+    return {
         "chemprop_mt_trainer": final_mt_trainer,
         "chemprop_mt_cp": final_mt_cp,
         "chemeleon_trainer": final_ch_trainer,
