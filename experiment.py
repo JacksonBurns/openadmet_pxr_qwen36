@@ -181,7 +181,6 @@ def load_osmordred_features(smis, osmordred_df):
     osmordred = osmordred_df.set_index("SMILES").loc[smis].reset_index()
     feat_cols = [c for c in osmordred.columns if c != "SMILES"]
     features = osmordred[feat_cols].values.astype(np.float32)
-    # Replace inf/-inf with NaN, then handle all NaN
     features = np.where(np.isinf(features), np.nan, features)
     mask = np.isnan(features)
     col_null_ratio = mask.sum(axis=0) / len(features)
@@ -191,29 +190,8 @@ def load_osmordred_features(smis, osmordred_df):
     col_means = np.nanmean(features, axis=0)
     col_means = np.where(np.isnan(col_means), 0, col_means)
     features = np.where(remaining_nan, col_means, features)
-    # Clip extreme values
     features = np.clip(features, -1e6, 1e6)
     return features
-
-
-def compute_osmordred_augmented(smis, osmordred_df, n_jobs=-1):
-    """Compute all fingerprints + osmordred descriptors."""
-    fps = np.hstack([
-        compute_morgan_fps(smis, radius=1, n_bits=2048, n_jobs=n_jobs),
-        compute_morgan_count_fps(smis, radius=1, n_bits=2048, n_jobs=n_jobs),
-        compute_morgan_count_fps(smis, radius=3, n_bits=2048, n_jobs=n_jobs),
-        compute_atompair_fps(smis, n_bits=2048, n_jobs=n_jobs),
-        compute_torsion_fps(smis, n_bits=2048, n_jobs=n_jobs),
-        compute_maccs_fps(smis, n_jobs=n_jobs),
-        compute_physchem_descriptors(smis, n_jobs=n_jobs),
-        load_osmordred_features(smis, osmordred_df),
-    ])
-    return fps
-
-
-def compute_osmordred_only(smis, osmordred_df):
-    """Compute osmordred features only."""
-    return load_osmordred_features(smis, osmordred_df)
 
 
 def train_chemeleon(smis, ys, val_smis, val_ys, batch_size=64,
@@ -492,6 +470,10 @@ def train_model(model_config, processed_data):
     train_pec50, val_pec50 = y_pEC50[train_idx], y_pEC50[val_idx]
     train_Emax, val_Emax = y_Emax[train_idx], y_Emax[val_idx]
 
+    # Load osmordred features
+    osmordred_train = pd.read_parquet("train_osmordred_features.parquet")
+    osmordred_train = osmordred_train.groupby("SMILES", as_index=False).mean(numeric_only=True)
+
     print(f"\nTrain/Val split: {len(train_smis)} train, {len(val_smis)} val")
 
     # -------------------------------------------------------------------------
@@ -545,6 +527,21 @@ def train_model(model_config, processed_data):
     sk_trained["concat"] = (sk_tr_fp, None)
     sk_preds_dict["sklearn_concat"] = sk_pr_fp
     print(f"    Sklearn concat MAE: {sk_m_fp:.4f}")
+
+    # Ridge on osmordred features (lightweight, less overfitting)
+    print("\n  Ridge (osmordred)...")
+    X_train_osm = load_osmordred_features(train_smis, osmordred_train)
+    X_val_osm = load_osmordred_features(val_smis, osmordred_train)
+    print(f"    Osmordred dim: {X_train_osm.shape[1]}")
+    osm_scaler = StandardScaler()
+    X_train_osm_sc = osm_scaler.fit_transform(X_train_osm)
+    X_val_osm_sc = osm_scaler.transform(X_val_osm)
+    ridge = Ridge(alpha=10.0, random_state=SEED)
+    ridge.fit(X_train_osm_sc, train_pec50)
+    ridge_pr = ridge.predict(X_val_osm_sc)
+    ridge_m = mean_absolute_error(val_pec50, ridge_pr)
+    print(f"    Ridge osmordred MAE: {ridge_m:.4f}")
+    sk_preds_dict["ridge_osmordred"] = ridge_pr
 
     # Ensemble weights
     print("\n--- Optimizing Ensemble Weights ---")
@@ -647,7 +644,27 @@ def train_model(model_config, processed_data):
         model_final.fit(X_scaled, y_pEC50)
         sklearn_finals[name] = (model_final, scaler_final)
 
+    # Ridge on full data
+    print("  Ridge osmordred GB...")
+    X_full_osm = load_osmordred_features(smis, osmordred_train)
+    osm_scaler_final = StandardScaler()
+    X_full_osm_sc = osm_scaler_final.fit_transform(X_full_osm)
+    ridge_final = Ridge(alpha=10.0, random_state=SEED)
+    ridge_final.fit(X_full_osm_sc, y_pEC50)
+
+    # Load test osmordred
+    osmordred_test = pd.read_parquet("test_phase1_osmordred_features.parquet")
+    osmordred_test = osmordred_test.groupby("SMILES", as_index=False).mean(numeric_only=True)
+
     return {
+        "chemprop_mt_trainer": final_mt_trainer,
+        "chemprop_mt_cp": final_mt_cp,
+        "chemeleon_trainer": final_ch_trainer,
+        "chemeleon_cp": final_ch_cp,
+        "sklearn_finals": sklearn_finals,
+        "ridge_final": ridge_final,
+        "ridge_scaler": osm_scaler_final,
+        "osmordred_test": osmordred_test,
         "chemprop_mt_trainer": final_mt_trainer,
         "chemprop_mt_cp": final_mt_cp,
         "chemeleon_trainer": final_ch_trainer,
@@ -708,6 +725,12 @@ def evaluate_model(model, test=None):
         "chemeleon": ch_preds,
     }
     all_preds.update(sk_test_preds)
+
+    # Ridge osmordred prediction
+    X_test_osm = load_osmordred_features(test_smiles, model["osmordred_test"])
+    X_test_osm_sc = model["ridge_scaler"].transform(X_test_osm)
+    ridge_pred = model["ridge_final"].predict(X_test_osm_sc)
+    all_preds["ridge_osmordred"] = ridge_pred
 
     final_pred = np.mean(list(all_preds.values()), axis=0)
 
