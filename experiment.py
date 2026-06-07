@@ -607,12 +607,14 @@ def evaluate_model(model, test=None):
 
     print("\n--- Generating Predictions ---")
 
-    # Chemprop
-    chemprop_mt_pred = predict_chemprop(
+    # Chemprop (pEC50 + Emax)
+    chemprop_mt_full = predict_chemprop(
         model["chemprop_mt_trainer"],
         model["chemprop_mt_cp"].best_model_path,
         test_smiles, n_tasks=2,
-    )[:, 0]
+    )
+    chemprop_mt_pred = chemprop_mt_full[:, 0]
+    chemprop_Emax = chemprop_mt_full[:, 1]
 
     # CheMeleon
     ch_test_data = [data.LazyMoleculeDatapoint(s) for s in test_smiles]
@@ -647,7 +649,13 @@ def evaluate_model(model, test=None):
 
     from math import exp
     gaussian = np.array([exp(-0.5 * ((p - 3.75) / 0.5) ** 2) for p in final_pred])
-    correction = -0.48 * gaussian * uncertainty_scale
+    
+    # Emax-based modulation: low predicted Emax compounds are more likely low-activity
+    # Normalize Emax to [0, 1] range (approx), invert so low Emax → high boost
+    emax_norm = np.clip(chemprop_Emax / 8.0, 0, 1)
+    emax_boost = 1.0 + 0.6 * (1.0 - emax_norm)  # range [1.0, 1.6]
+    
+    correction = -0.48 * gaussian * uncertainty_scale * emax_boost
     final_pred = final_pred + correction
 
     final_pred = np.clip(final_pred, 1.5, 8.0)
