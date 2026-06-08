@@ -1,0 +1,7 @@
+# Lab Notebook: autoresearch/jun7
+# Date: 2026-06-07
+# Goal: Minimize evaluation MAE for PXR activity prediction
+# Focus: Improve predictions in <3.5 pEC50 range (known weakness)
+# Prior best: ~0.4565
+#
+# Format: [Run #] | MAE | Change | Notes | Next idea
