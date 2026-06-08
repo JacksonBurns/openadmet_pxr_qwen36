@@ -194,7 +194,7 @@ def load_osmordred_features(smis, osmordred_df):
     return features
 
 
-def train_chemeleon(smis, ys, val_smis, val_ys, batch_size=64,
+def train_chemeleon(smis, ys, val_smis, val_ys, batch_size=32,
                     max_epochs=80, checkpoint_dir="chemeleon", n_tasks=1):
     """Finetune CheMeleon foundation model for regression."""
     import torch as pt
@@ -288,7 +288,7 @@ def train_chemeleon(smis, ys, val_smis, val_ys, batch_size=64,
 
 def train_chemprop(smis, ys, val_smis, val_ys,
                    d_h=512, depth=5, n_layers=2, hidden_dim=512,
-                   batch_size=64, max_epochs=80, checkpoint_dir="chemprop_mt",
+                   batch_size=32, max_epochs=80, checkpoint_dir="chemprop_mt",
                    n_tasks=2):
     """Train a chemprop MPNN for regression."""
     if ys.ndim == 1:
