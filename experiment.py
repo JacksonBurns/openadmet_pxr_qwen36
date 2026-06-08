@@ -500,12 +500,64 @@ def train_model(model_config, processed_data):
     )
     print(f"    MAE (pEC50): {mean_absolute_error(val_pec50, ch_preds):.4f}")
 
-    # Ensemble weights (top 2 models)
+    # Sklearn with fingerprints (baseline)
+    sk_trained = {}
+    sk_preds_dict = {}
+
+    print("\n  Sklearn (fingerprints)...")
+    X_train_fp = np.hstack([
+        compute_morgan_fps(train_smis, radius=1, n_bits=2048),
+        compute_morgan_count_fps(train_smis, radius=1, n_bits=2048),
+        compute_morgan_count_fps(train_smis, radius=3, n_bits=2048),
+        compute_atompair_fps(train_smis, n_bits=2048),
+        compute_torsion_fps(train_smis, n_bits=2048),
+        compute_maccs_fps(train_smis),
+        compute_physchem_descriptors(train_smis),
+    ])
+    X_val_fp = np.hstack([
+        compute_morgan_fps(val_smis, radius=1, n_bits=2048),
+        compute_morgan_count_fps(val_smis, radius=1, n_bits=2048),
+        compute_morgan_count_fps(val_smis, radius=3, n_bits=2048),
+        compute_atompair_fps(val_smis, n_bits=2048),
+        compute_torsion_fps(val_smis, n_bits=2048),
+        compute_maccs_fps(val_smis),
+        compute_physchem_descriptors(val_smis),
+    ])
+    sk_tr_fp, sk_pr_fp, sk_m_fp = train_sklearn_model(X_train_fp, train_pec50, X_val_fp, val_pec50)
+    sk_trained["concat"] = (sk_tr_fp, None)
+    sk_preds_dict["sklearn_concat"] = sk_pr_fp
+    print(f"    Sklearn concat MAE: {sk_m_fp:.4f}")
+
+    # Ridge on osmordred features (lightweight, less overfitting)
+    print("\n  Ridge (osmordred)...")
+    X_train_osm = load_osmordred_features(train_smis, osmordred_train)
+    X_val_osm = load_osmordred_features(val_smis, osmordred_train)
+    print(f"    Osmordred dim: {X_train_osm.shape[1]}")
+    osm_scaler = StandardScaler()
+    X_train_osm_sc = osm_scaler.fit_transform(X_train_osm)
+    X_val_osm_sc = osm_scaler.transform(X_val_osm)
+    best_ridge_m = 999
+    best_alpha = 10.0
+    best_ridge_pr = None
+    for alpha in [1.0, 3.0, 5.0, 10.0, 20.0, 50.0, 100.0]:
+        ridge = Ridge(alpha=alpha, random_state=SEED)
+        ridge.fit(X_train_osm_sc, train_pec50)
+        pr = ridge.predict(X_val_osm_sc)
+        m = mean_absolute_error(val_pec50, pr)
+        if m < best_ridge_m:
+            best_ridge_m = m
+            best_alpha = alpha
+            best_ridge_pr = pr
+    print(f"    Ridge osmordred MAE: {best_ridge_m:.4f} (alpha={best_alpha})")
+    sk_preds_dict["ridge_osmordred"] = best_ridge_pr
+
+    # Ensemble weights
     print("\n--- Optimizing Ensemble Weights ---")
     all_val_preds = {
         "chemprop_mt": mt_pec50,
         "chemeleon": ch_preds,
     }
+    all_val_preds.update(sk_preds_dict)
 
     ensemble_weights, ensemble_mae = optimize_ensemble_weights(all_val_preds, val_pec50)
     print(f"  Ensemble val MAE: {ensemble_mae:.4f}")
@@ -580,11 +632,47 @@ def train_model(model_config, processed_data):
         checkpoint_dir="chemeleon", n_tasks=1,
     )
 
+    # Sklearn on full data
+    sklearn_finals = {}
+    for name, (trained, _) in sk_trained.items():
+        print(f"  Sklearn {name} GB...")
+        X_full = np.hstack([
+            compute_morgan_fps(smis, radius=1, n_bits=2048),
+            compute_morgan_count_fps(smis, radius=1, n_bits=2048),
+            compute_morgan_count_fps(smis, radius=3, n_bits=2048),
+            compute_atompair_fps(smis, n_bits=2048),
+            compute_torsion_fps(smis, n_bits=2048),
+            compute_maccs_fps(smis),
+            compute_physchem_descriptors(smis),
+        ])
+        model_orig, _ = trained
+        scaler_final = StandardScaler()
+        X_scaled = scaler_final.fit_transform(X_full)
+        model_final = type(model_orig)(**model_orig.get_params())
+        model_final.fit(X_scaled, y_pEC50)
+        sklearn_finals[name] = (model_final, scaler_final)
+
+    # Ridge on full data
+    print("  Ridge osmordred GB...")
+    X_full_osm = load_osmordred_features(smis, osmordred_train)
+    osm_scaler_final = StandardScaler()
+    X_full_osm_sc = osm_scaler_final.fit_transform(X_full_osm)
+    ridge_final = Ridge(alpha=best_alpha, random_state=SEED)
+    ridge_final.fit(X_full_osm_sc, y_pEC50)
+
+    # Load test osmordred
+    osmordred_test = pd.read_parquet("test_phase1_osmordred_features.parquet")
+    osmordred_test = osmordred_test.groupby("SMILES", as_index=False).mean(numeric_only=True)
+
     return {
         "chemprop_mt_trainer": final_mt_trainer,
         "chemprop_mt_cp": final_mt_cp,
         "chemeleon_trainer": final_ch_trainer,
         "chemeleon_cp": final_ch_cp,
+        "sklearn_finals": sklearn_finals,
+        "ridge_final": ridge_final,
+        "ridge_scaler": osm_scaler_final,
+        "osmordred_test": osmordred_test,
         "ensemble_weights": ensemble_weights,
         "ensemble_mae": ensemble_mae,
         "test": test,
@@ -618,11 +706,32 @@ def evaluate_model(model, test=None):
     ch_preds = torch.cat(ch_preds, dim=0).cpu().numpy().ravel()
     print(f"  CheMeleon: [{ch_preds.min():.2f}, {ch_preds.max():.2f}]")
 
-     # Ensemble - 2 models: CheMeleon + Chemprop
+     # Sklearn predictions
+    sk_test_preds = {}
+    for name, (model_inst, scaler) in model["sklearn_finals"].items():
+        X_test = np.hstack([
+            compute_morgan_fps(test_smiles, radius=1, n_bits=2048),
+            compute_morgan_count_fps(test_smiles, radius=1, n_bits=2048),
+            compute_morgan_count_fps(test_smiles, radius=3, n_bits=2048),
+            compute_atompair_fps(test_smiles, n_bits=2048),
+            compute_torsion_fps(test_smiles, n_bits=2048),
+            compute_maccs_fps(test_smiles),
+            compute_physchem_descriptors(test_smiles),
+        ])
+        X_scaled = scaler.transform(X_test)
+        sk_test_preds[f"sklearn_{name}"] = model_inst.predict(X_scaled)
+
+    # Ensemble - 3 models: CheMeleon + Chemprop + Ridge osmordred
     all_preds = {
         "chemprop_mt": chemprop_mt_pred,
         "chemeleon": ch_preds,
     }
+
+    # Ridge osmordred prediction
+    X_test_osm = load_osmordred_features(test_smiles, model["osmordred_test"])
+    X_test_osm_sc = model["ridge_scaler"].transform(X_test_osm)
+    ridge_pred = model["ridge_final"].predict(X_test_osm_sc)
+    all_preds["ridge_osmordred"] = ridge_pred
 
     final_pred = np.mean(list(all_preds.values()), axis=0)
 
@@ -638,6 +747,9 @@ def evaluate_model(model, test=None):
     final_pred = np.clip(final_pred, 1.5, 8.0)
 
     print(f"  Chemprop MT: [{chemprop_mt_pred.min():.2f}, {chemprop_mt_pred.max():.2f}]")
+    for name in sorted(sk_test_preds.keys()):
+        p = sk_test_preds[name]
+        print(f"  {name}:   [{p.min():.2f}, {p.max():.2f}]")
     print(f"  Ensemble:    [{final_pred.min():.2f}, {final_pred.max():.2f}]")
 
     # Evaluate
@@ -659,9 +771,10 @@ def evaluate_model(model, test=None):
         "Molecule Name": test["Molecule Name"].values,
         "SMILES": test_smiles,
         "Chemprop_MT": chemprop_mt_pred,
-        "CheMeleon": ch_preds,
-        "Ensemble": final_pred,
     })
+    for name in sorted(sk_test_preds.keys()):
+        results[name] = sk_test_preds[name]
+    results["Ensemble"] = final_pred
     
     results.to_csv("predictions.csv", index=False)
     print("\n  Predictions saved to predictions.csv")
