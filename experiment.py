@@ -432,7 +432,7 @@ def optimize_ensemble_weights(val_preds_dict, y_val):
     weight_dict = dict(zip(names, weights))
     pred = meta.predict(X_scaled)
     best_mae = mean_absolute_error(y_val, pred)
-    return weight_dict, best_mae
+    return weight_dict, best_mae, meta, scaler, names
 
 
 # ============================================================================
@@ -559,7 +559,9 @@ def train_model(model_config, processed_data):
     }
     all_val_preds.update(sk_preds_dict)
 
-    ensemble_weights, ensemble_mae = optimize_ensemble_weights(all_val_preds, val_pec50)
+    # Meta-learner on top 2 models only (same as test ensemble)
+    meta_val_preds = {k: v for k, v in all_val_preds.items() if k in ("chemprop_mt", "chemeleon")}
+    ensemble_weights, ensemble_mae, meta_model, meta_scaler, meta_names = optimize_ensemble_weights(meta_val_preds, val_pec50)
     print(f"  Ensemble val MAE: {ensemble_mae:.4f}")
     print("  Weights:")
     for name, w in sorted(ensemble_weights.items(), key=lambda x: -x[1]):
@@ -675,6 +677,9 @@ def train_model(model_config, processed_data):
         "osmordred_test": osmordred_test,
         "ensemble_weights": ensemble_weights,
         "ensemble_mae": ensemble_mae,
+        "meta_model": meta_model,
+        "meta_scaler": meta_scaler,
+        "meta_names": meta_names,
         "test": test,
         "corr_params": best_params if corr_mae < ensemble_mae else (0.0, 0.0, 0.0),
         "corr_improvement": corr_mae - ensemble_mae,
@@ -733,7 +738,11 @@ def evaluate_model(model, test=None):
     ridge_pred = model["ridge_final"].predict(X_test_osm_sc)
     all_preds["ridge_osmordred"] = ridge_pred
 
-    final_pred = np.mean(list(all_preds.values()), axis=0)
+    final_pred = model["meta_model"].predict(
+        model["meta_scaler"].transform(
+            np.column_stack([all_preds[n] for n in model["meta_names"]])
+        )
+    )
 
     # Uncertainty-aware Gaussian correction (optimized for 4-model ensemble):
     from math import exp
