@@ -1,8 +1,0 @@
-Timestamp,MAE,Execution Time
-2026-06-07 20:12:16,0.4565,1097.1s
-2026-06-07 22:45:17,0.4650,1635.0s
-2026-06-07 23:14:08,0.4667,970.3s
-2026-06-07 23:31:23,0.4548,990.9s
-2026-06-08 08:36:31,0.4548,1088.0s
-2026-06-08 09:40:06,"CRASH (Checkpoint file not found: /media/jackson/nicedisk/openadmet_pxr_qwen36/checkpoints/chemprop_mt/swa_ckpt.ckpt)",517.4s
-2026-06-08 10:12:42,0.4757,1318.7s
