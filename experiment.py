@@ -101,8 +101,8 @@ def get_raw_osmordred(smis, osmordred_df):
 # MODELING (PYTORCH LIGHTNING / SKLEARN)
 # ============================================================================
 
-def build_and_train_pl(train_smis, train_ys, val_smis=None, val_ys=None, model_type='chemprop', 
-                       max_epochs=80, patience=12, checkpoint_dir="", n_tasks=1, mode='search'):
+def build_and_train_pl(train_smis, train_ys, val_smis=None, val_ys=None, model_type='chemprop',
+                        max_epochs=80, patience=12, checkpoint_dir="", n_tasks=1, mode='search', ffn_dropout=None):
     """Unified wrapper handling both 'search' (find best epoch) and 'retrain' (100% data + SWA) modes."""
     train_ys = np.atleast_2d(train_ys)
     if train_ys.shape[0] == 1: train_ys = train_ys.T
@@ -120,7 +120,8 @@ def build_and_train_pl(train_smis, train_ys, val_smis=None, val_ys=None, model_t
         ckpt = torch.load("chemeleon_mp.pt", weights_only=True)
         mp = nn.BondMessagePassing(**ckpt['hyper_parameters'])
         mp.load_state_dict(ckpt['state_dict'])
-        ffn = nn.RegressionFFN(n_tasks=n_tasks, output_transform=out_transform, input_dim=mp.output_dim, hidden_dim=mp.output_dim, n_layers=2, dropout=0.2, criterion=MAE())
+        dd = ffn_dropout if ffn_dropout is not None else 0.2
+        ffn = nn.RegressionFFN(n_tasks=n_tasks, output_transform=out_transform, input_dim=mp.output_dim, hidden_dim=mp.output_dim, n_layers=2, dropout=dd, criterion=MAE())
         model = models.MPNN(mp, nn.NormAggregation(), ffn, batch_norm=False, init_lr=1e-5, max_lr=1e-4, final_lr=1e-5)
         swa_lr = 1e-5
     else:
@@ -219,6 +220,13 @@ def train_model(processed_data):
     )
     print(f"    MAE (pEC50): {mean_absolute_error(val_pec50, ch_preds):.4f} | Best Epoch: {ch_best_epoch}")
 
+    print("\n  CheMeleon Foundation v2 Search (dropout=0.3)...")
+    ch2_preds, ch2_best_epoch = build_and_train_pl(
+        train_smis, train_pec50, val_smis, val_pec50,
+        'chemeleon', max_epochs=80, patience=25, checkpoint_dir="chemeleon2", n_tasks=1, mode='search', ffn_dropout=0.3
+    )
+    print(f"    MAE (pEC50): {mean_absolute_error(val_pec50, ch2_preds):.4f} | Best Epoch: {ch2_best_epoch}")
+
     print("\n  Sklearn (fingerprints)...")
     X_train_fp, X_val_fp = compute_all_rdkit_features(train_smis), compute_all_rdkit_features(val_smis)
     sk_trained, sk_preds_dict = {}, {}
@@ -241,7 +249,7 @@ def train_model(processed_data):
     print(f"    Ridge osmordred MAE: {best_ridge_m:.4f} (alpha={best_alpha})")
 
     print("\n--- Optimizing Ensemble Weights ---")
-    all_val_preds = {"chemprop_mt": mt_preds[:, 0], "chemeleon": ch_preds, **sk_preds_dict}
+    all_val_preds = {"chemprop_mt": mt_preds[:, 0], "chemeleon": ch_preds, "chemeleon2": ch2_preds, **sk_preds_dict}
     ensemble_weights, ensemble_mae = optimize_ensemble_weights(all_val_preds, val_pec50)
     print(f"  Ensemble val MAE: {ensemble_mae:.4f}\n  Weights:")
     for name, w in sorted(ensemble_weights.items(), key=lambda x: -x[1]): print(f"    {name}: {w:.4f}")
@@ -261,8 +269,15 @@ def train_model(processed_data):
     target_ch_epochs = max(int(ch_best_epoch * 1.1), 1)
     print(f"  CheMeleon Foundation (Retraining blindly for {target_ch_epochs} epochs with SWA)...")
     final_ch_trainer, final_ch_model = build_and_train_pl(
-        smis, y_pEC50, 
+        smis, y_pEC50,
         model_type='chemeleon', max_epochs=target_ch_epochs, n_tasks=1, mode='retrain'
+    )
+
+    target_ch2_epochs = max(int(ch2_best_epoch * 1.1), 1)
+    print(f"  CheMeleon Foundation v2 (Retraining blindly for {target_ch2_epochs} epochs with SWA)...")
+    final_ch2_trainer, final_ch2_model = build_and_train_pl(
+        smis, y_pEC50,
+        model_type='chemeleon', max_epochs=target_ch2_epochs, n_tasks=1, mode='retrain', ffn_dropout=0.3
     )
 
     sklearn_finals, X_full_fp = {}, compute_all_rdkit_features(smis)
@@ -285,7 +300,8 @@ def train_model(processed_data):
 
     return {
         "chemprop_mt_trainer": final_mt_trainer, "chemprop_mt_model": final_mt_model,
-        "chemeleon_trainer": final_ch_trainer, "chemeleon_model": final_ch_model,
+    "chemeleon_trainer": final_ch_trainer, "chemeleon_model": final_ch_model,
+        "chemeleon2_trainer": final_ch2_trainer, "chemeleon2_model": final_ch2_model,
         "sklearn_finals": sklearn_finals, "ridge_final": ridge_final,
         "osmordred_test": osmordred_test, "ensemble_weights": ensemble_weights, "ensemble_mae": ensemble_mae,
         "test": test,
@@ -299,14 +315,17 @@ def evaluate_model(model, test=None):
     chemprop_mt_pred = predict_pl_model(model["chemprop_mt_trainer"], model["chemprop_mt_model"], test_smiles, n_tasks=2)[:, 0]
     ch_preds = predict_pl_model(model["chemeleon_trainer"], model["chemeleon_model"], test_smiles, n_tasks=1)
     print(f"  CheMeleon: [{ch_preds.min():.2f}, {ch_preds.max():.2f}]")
+    ch2_preds = predict_pl_model(model["chemeleon2_trainer"], model["chemeleon2_model"], test_smiles, n_tasks=1)
+    print(f"  CheMeleon2: [{ch2_preds.min():.2f}, {ch2_preds.max():.2f}]")
 
     sk_test_preds, X_test_fp = {}, compute_all_rdkit_features(test_smiles)
     for name, pipeline in model["sklearn_finals"].items():
         sk_test_preds[f"sklearn_{name}"] = pipeline.predict(X_test_fp)
 
     all_preds = {
-        "chemprop_mt": chemprop_mt_pred, 
-        "chemeleon": ch_preds, 
+        "chemprop_mt": chemprop_mt_pred,
+        "chemeleon": ch_preds,
+        "chemeleon2": ch2_preds,
         "ridge_osmordred": model["ridge_final"].predict(get_raw_osmordred(test_smiles, model["osmordred_test"])),
         **sk_test_preds
     }
