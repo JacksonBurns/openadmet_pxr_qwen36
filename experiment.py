@@ -463,7 +463,7 @@ def train_model(model_config, processed_data):
     # Stratified train/val split
     train_idx, val_idx = train_test_split(
         np.arange(len(smis)), test_size=0.2, random_state=SEED,
-        stratify=np.digitize(y_pEC50, bins=[4.0, 5.0, 6.0, 8.0]),
+        stratify=np.digitize(y_pEC50, bins=[3.0, 3.5, 4.0, 5.0, 6.0, 8.0]),
     )
 
     train_smis, val_smis = smis[train_idx], smis[val_idx]
