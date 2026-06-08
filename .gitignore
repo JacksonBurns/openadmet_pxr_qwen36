@@ -12,6 +12,9 @@ examples
 # and parquet as well
 *.parquet
 
+# surrogate models
+chemeleon_pampa_output
+
 # experiment outputs
 checkpoints
 
