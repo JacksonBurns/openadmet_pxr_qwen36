@@ -5,3 +5,12 @@
 # Prior best: ~0.4565
 #
 # Format: [Run #] | MAE | Change | Notes | Next idea
+
+[1] 0.4732 | Re-center Gaussian at 2.8/3.5 | Worse. Correction doesn't match val distribution. |
+[2] 0.4718 | 2x sample weight for pEC50<3.5 | Worse everywhere. |
+[3] 0.4758 | Gaussian grid search on val | Worse. Val lacks low-activity error pattern. |
+[4] 0.4693 | Agreement-scaled dual Gaussian | Worse. Pushes predictions too low. |
+[5] 0.4566 | Inverse-MAE weighted ensemble | Same. All model MAEs similar. |
+[6] 0.4709 | Chemprop single-task instead of multi-task | Worse. Multi-task helps generalization. |
+# PLATEAU: 6 failures. Structural change needed.
+# Key insight: The error is structural (models can't learn low-activity pattern), not hyperparameter.
