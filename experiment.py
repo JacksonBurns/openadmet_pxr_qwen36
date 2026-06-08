@@ -494,10 +494,13 @@ def train_model(model_config, processed_data):
 
     # CheMeleon foundation model (finetuned, low LR)
     print("\n  CheMeleon Foundation...")
-    ch_preds, _, _ = train_chemeleon(
-        train_smis, train_pec50, val_smis, val_pec50,
-        checkpoint_dir="chemeleon", n_tasks=1,
+    mt_chemeleon = np.column_stack([train_pec50, train_Emax])
+    val_mt_ch = np.column_stack([val_pec50, val_Emax])
+    ch_mt_preds, _, _ = train_chemeleon(
+        train_smis, mt_chemeleon, val_smis, val_mt_ch,
+        checkpoint_dir="chemeleon", n_tasks=2,
     )
+    ch_preds = ch_mt_preds[:, 0] if ch_mt_preds.ndim > 1 else ch_mt_preds
     print(f"    MAE (pEC50): {mean_absolute_error(val_pec50, ch_preds):.4f}")
 
     # Sklearn with fingerprints (baseline)
@@ -624,12 +627,12 @@ def train_model(model_config, processed_data):
     np.random.shuffle(holdout_idx)
     split_pt = int(0.8 * len(holdout_idx))
     ch_train_smis = smis[holdout_idx[:split_pt]]
-    ch_train_y = y_pEC50[holdout_idx[:split_pt]]
+    ch_train_y = np.column_stack([y_pEC50[holdout_idx[:split_pt]], y_Emax[holdout_idx[:split_pt]]])
     ch_val_smis = smis[holdout_idx[split_pt:]]
-    ch_val_y = y_pEC50[holdout_idx[split_pt:]]
+    ch_val_y = np.column_stack([y_pEC50[holdout_idx[split_pt:]], y_Emax[holdout_idx[split_pt:]]])
     _, final_ch_trainer, final_ch_cp = train_chemeleon(
         ch_train_smis, ch_train_y, ch_val_smis, ch_val_y,
-        checkpoint_dir="chemeleon", n_tasks=1,
+        checkpoint_dir="chemeleon", n_tasks=2,
     )
 
     # Sklearn on full data
@@ -703,7 +706,8 @@ def evaluate_model(model, test=None):
     ch_preds = model["chemeleon_trainer"].predict(
         model["chemeleon_trainer"].lightning_module, ch_test_loader,
         ckpt_path=model["chemeleon_cp"].best_model_path)
-    ch_preds = torch.cat(ch_preds, dim=0).cpu().numpy().ravel()
+    ch_preds = torch.cat(ch_preds, dim=0).cpu().numpy()
+    ch_preds = ch_preds[:, 0] if ch_preds.ndim > 1 else ch_preds.ravel()
     print(f"  CheMeleon: [{ch_preds.min():.2f}, {ch_preds.max():.2f}]")
 
      # Sklearn predictions
@@ -721,17 +725,11 @@ def evaluate_model(model, test=None):
         X_scaled = scaler.transform(X_test)
         sk_test_preds[f"sklearn_{name}"] = model_inst.predict(X_scaled)
 
-    # Ensemble - 3 models: CheMeleon + Chemprop + Ridge osmordred
+    # Ensemble - 2 models: CheMeleon + Chemprop
     all_preds = {
         "chemprop_mt": chemprop_mt_pred,
         "chemeleon": ch_preds,
     }
-
-    # Ridge osmordred prediction
-    X_test_osm = load_osmordred_features(test_smiles, model["osmordred_test"])
-    X_test_osm_sc = model["ridge_scaler"].transform(X_test_osm)
-    ridge_pred = model["ridge_final"].predict(X_test_osm_sc)
-    all_preds["ridge_osmordred"] = ridge_pred
 
     final_pred = np.mean(list(all_preds.values()), axis=0)
 
