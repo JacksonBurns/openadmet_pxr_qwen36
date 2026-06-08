@@ -721,27 +721,22 @@ def evaluate_model(model, test=None):
         X_scaled = scaler.transform(X_test)
         sk_test_preds[f"sklearn_{name}"] = model_inst.predict(X_scaled)
 
-    # Ensemble - 3 models: CheMeleon + Chemprop + Ridge osmordred
+    # Ensemble - 2 models: CheMeleon + Chemprop
     all_preds = {
         "chemprop_mt": chemprop_mt_pred,
         "chemeleon": ch_preds,
     }
 
-    # Ridge osmordred prediction
-    X_test_osm = load_osmordred_features(test_smiles, model["osmordred_test"])
-    X_test_osm_sc = model["ridge_scaler"].transform(X_test_osm)
-    ridge_pred = model["ridge_final"].predict(X_test_osm_sc)
-    all_preds["ridge_osmordred"] = ridge_pred
-
     final_pred = np.mean(list(all_preds.values()), axis=0)
 
-    # Uncertainty-aware Gaussian correction (optimized for 4-model ensemble):
+    # Dual Gaussian correction for 2-model ensemble:
     from math import exp
     pred_array = np.array([all_preds[n] for n in all_preds])
     pred_std = pred_array.std(axis=0)
     uncertainty_scale = np.clip(pred_std / 0.30, 0.2, 2.5)
-    gaussian = np.array([exp(-0.5 * ((p - 3.70) / 0.5) ** 2) for p in final_pred])
-    correction = -0.42 * gaussian * uncertainty_scale
+    gaussian_low = np.array([exp(-0.5 * ((p - 2.8) / 0.5) ** 2) for p in final_pred])
+    gaussian_mid = np.array([exp(-0.5 * ((p - 3.70) / 0.5) ** 2) for p in final_pred])
+    correction = -(0.20 * gaussian_low + 0.42 * gaussian_mid) * uncertainty_scale
     final_pred = final_pred + correction
 
     final_pred = np.clip(final_pred, 1.5, 8.0)
