@@ -125,7 +125,7 @@ def build_and_train_pl(train_smis, train_ys, val_smis=None, val_ys=None, model_t
         swa_lr = 1e-5
     else:
         ffn = nn.RegressionFFN(n_tasks=n_tasks, output_transform=out_transform, input_dim=512, hidden_dim=512, n_layers=2, dropout=0.1, criterion=MAE())
-        model = models.MPNN(nn.BondMessagePassing(d_h=512, depth=5), nn.NormAggregation(), ffn, batch_norm=True, init_lr=1e-4, max_lr=5e-4, final_lr=1e-4)
+        model = models.MPNN(nn.BondMessagePassing(d_h=512, depth=7), nn.NormAggregation(), ffn, batch_norm=True, init_lr=1e-4, max_lr=5e-4, final_lr=1e-4)
         swa_lr = 1e-4
 
     if mode == 'search':
