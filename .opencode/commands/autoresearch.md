@@ -28,7 +28,7 @@ You can change which targets are regressed, how you preprocess the molecular str
 
 **What you CANNOT do:**
 - Modify other files: only modify `experiment.py`, other files are irrelevant to you.
-- Install new packages or add dependencies: you can only use `molpipeline`, `chemprop`, `xgboost`, and `scikit-learn`.
+- Install new packages or add dependencies: you can only use the pre-provided osmordred features (`*_osmordred_features.parquet`), `molpipeline`, `chemprop`, `xgboost`, and `scikit-learn`.
 - Modify the evaluation data: the evaluation data is static - do not change, and do not use it for training or validation, only testing of your models.
 
 **The goal is simple: get the lowest evaluation MAE.** Everything is fair game: change the architecture, the optimizer, the hyperparameters, the batch size, the model size. The only constraint is that the code runs without crashing.
