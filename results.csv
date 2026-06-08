@@ -1,0 +1,18 @@
+Timestamp,MAE,Execution Time
+2026-06-07 13:04:03,0.4600,1041.8s
+2026-06-07 13:26:13,"CRASH (list indices must be integers or slices, not Series)",2.6s
+2026-06-07 13:26:53,"CRASH (all the input array dimensions except for the concatenation axis must match exactly, but along dimension 0, the array at index 0 has size 3311 and the array at index 7 has size 5420)",392.0s
+2026-06-07 13:35:00,"CRASH (Input X contains infinity or a value too large for dtype('float32').)",400.1s
+2026-06-07 13:42:40,0.4687,1010.3s
+2026-06-07 14:01:44,0.4796,1053.9s
+2026-06-07 14:24:55,0.4600,1003.6s
+2026-06-07 14:48:17,"CRASH (name 'math_exp' is not defined)",1012.6s
+2026-06-07 15:06:18,"CRASH (name 'exp' is not defined)",1016.6s
+2026-06-07 15:24:17,0.4796,1029.9s
+2026-06-07 15:45:58,0.4804,1012.4s
+2026-06-07 16:10:10,"CRASH (name 'osmordred_test' is not defined)",998.7s
+2026-06-07 16:27:49,0.4600,997.1s
+2026-06-07 16:49:10,0.4576,1019.1s
+2026-06-07 17:06:55,0.4576,1108.0s
+2026-06-07 19:06:22,0.4565,1021.2s
+2026-06-07 19:27:36,"CRASH (DataLoader worker (pid 964196) is killed by signal: Terminated. )",163.3s
