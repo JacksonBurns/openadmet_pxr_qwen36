@@ -721,12 +721,11 @@ def evaluate_model(model, test=None):
         X_scaled = scaler.transform(X_test)
         sk_test_preds[f"sklearn_{name}"] = model_inst.predict(X_scaled)
 
-    # Ensemble - simple averaging (more robust than Ridge)
+    # Ensemble - only top 2 models (CheMeleon + Chemprop)
     all_preds = {
         "chemprop_mt": chemprop_mt_pred,
         "chemeleon": ch_preds,
     }
-    all_preds.update(sk_test_preds)
 
     # Ridge osmordred prediction
     X_test_osm = load_osmordred_features(test_smiles, model["osmordred_test"])
