@@ -500,15 +500,6 @@ def train_model(model_config, processed_data):
     )
     print(f"    MAE (pEC50): {mean_absolute_error(val_pec50, ch_preds):.4f}")
 
-    # CheMeleon v2: different LR schedule for diversity
-    print("\n  CheMeleon Foundation v2...")
-    ch2_preds, _, _ = train_chemeleon(
-        train_smis, train_pec50, val_smis, val_pec50,
-        checkpoint_dir="chemeleon2", n_tasks=1,
-        max_epochs=120,
-    )
-    print(f"    MAE (pEC50): {mean_absolute_error(val_pec50, ch2_preds):.4f}")
-
     # Sklearn with fingerprints (baseline)
     sk_trained = {}
     sk_preds_dict = {}
@@ -565,7 +556,6 @@ def train_model(model_config, processed_data):
     all_val_preds = {
         "chemprop_mt": mt_pec50,
         "chemeleon": ch_preds,
-        "chemeleon2": ch2_preds,
     }
     all_val_preds.update(sk_preds_dict)
 
@@ -642,18 +632,6 @@ def train_model(model_config, processed_data):
         checkpoint_dir="chemeleon", n_tasks=1,
     )
 
-    # CheMeleon v2: more epochs
-    print("  CheMeleon v2 (hold-out val)...")
-    holdout_idx2 = np.arange(len(smis))
-    np.random.seed(SEED + 2)
-    np.random.shuffle(holdout_idx2)
-    split_pt2 = int(0.8 * len(holdout_idx2))
-    _, final_ch2_trainer, final_ch2_cp = train_chemeleon(
-        smis[holdout_idx2[:split_pt2]], y_pEC50[holdout_idx2[:split_pt2]],
-        smis[holdout_idx2[split_pt2:]], y_pEC50[holdout_idx2[split_pt2:]],
-        checkpoint_dir="chemeleon2", n_tasks=1, max_epochs=120,
-    )
-
     # Sklearn on full data
     sklearn_finals = {}
     for name, (trained, _) in sk_trained.items():
@@ -691,8 +669,6 @@ def train_model(model_config, processed_data):
         "chemprop_mt_cp": final_mt_cp,
         "chemeleon_trainer": final_ch_trainer,
         "chemeleon_cp": final_ch_cp,
-        "chemeleon2_trainer": final_ch2_trainer,
-        "chemeleon2_cp": final_ch2_cp,
         "sklearn_finals": sklearn_finals,
         "ridge_final": ridge_final,
         "ridge_scaler": osm_scaler_final,
@@ -730,13 +706,6 @@ def evaluate_model(model, test=None):
     ch_preds = torch.cat(ch_preds, dim=0).cpu().numpy().ravel()
     print(f"  CheMeleon: [{ch_preds.min():.2f}, {ch_preds.max():.2f}]")
 
-    # CheMeleon v2
-    ch2_preds = model["chemeleon2_trainer"].predict(
-        model["chemeleon2_trainer"].lightning_module, ch_test_loader,
-        ckpt_path=model["chemeleon2_cp"].best_model_path)
-    ch2_preds = torch.cat(ch2_preds, dim=0).cpu().numpy().ravel()
-    print(f"  CheMeleon v2: [{ch2_preds.min():.2f}, {ch2_preds.max():.2f}]")
-
      # Sklearn predictions
     sk_test_preds = {}
     for name, (model_inst, scaler) in model["sklearn_finals"].items():
@@ -756,7 +725,6 @@ def evaluate_model(model, test=None):
     all_preds = {
         "chemprop_mt": chemprop_mt_pred,
         "chemeleon": ch_preds,
-        "chemeleon2": ch2_preds,
     }
 
     # Ridge osmordred prediction
