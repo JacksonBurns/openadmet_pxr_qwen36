@@ -1,52 +1,48 @@
 import os
+import re
 import shutil
 import warnings
-from joblib import Parallel, delayed
+from datetime import datetime
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import torch
+from joblib import Parallel, delayed
+
 from xgboost import XGBRegressor
-from sklearn.linear_model import Ridge
+from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.metrics import mean_absolute_error
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-from scipy.optimize import minimize
-from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import make_pipeline
+
+from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint, StochasticWeightAveraging
 from lightning.pytorch import seed_everything
 from lightning import pytorch as pl
+
 from chemprop import data, models, nn
 from chemprop.featurizers import CuikmolmakerMolGraphFeaturizer
 from rdkit import Chem
-from rdkit.Chem import rdFingerprintGenerator
+from rdkit.Chem import rdFingerprintGenerator, Descriptors, MACCSkeys
 
 warnings.filterwarnings("ignore")
-
 SEED = 42
 
 # ============================================================================
-# DATA LOADING AND PREPROCESSING
+# DATA PROCESSING
 # ============================================================================
 
 def load_data():
-    train = pd.read_csv("train.csv", low_memory=False)
-    test = pd.read_csv("test_phase1.csv")
-    return train, test
-
+    return pd.read_csv("train.csv", low_memory=False), pd.read_csv("test_phase1.csv")
 
 def prepare_primary_data(train_df):
-    """Extract high-quality primary assay data, deduplicated by SMILES."""
-    primary = train_df[
-        train_df["primary_assay_pEC50"].notna()
-        & train_df["SMILES"].notna()
-        & (train_df["SMILES"] != "")
-    ].copy()
-
+    primary = train_df[train_df["primary_assay_pEC50"].notna() & train_df["SMILES"].notna() & (train_df["SMILES"] != "")].copy()
     primary["pEC50"] = primary["primary_assay_pEC50"].astype(float)
-    primary["std_error"] = primary["primary_assay_pEC50_std.error (-log10(molarity))"].astype(float)
+    primary["std_error"] = primary["primary_assay_pEC50_std.error (-log10(molarity))"].astype(float).replace(0, np.nan).fillna(0.1)
     primary["Emax"] = primary["primary_assay_Emax_estimate (log2FC vs. baseline)"].astype(float)
     primary["Emax_vs_pos"] = primary["primary_assay_Emax.vs.pos.ctrl_estimate (dimensionless)"].astype(float)
-
-    primary["std_error"] = primary["std_error"].replace(0, np.nan).fillna(0.1)
 
     def weighted_agg(group):
         weights = 1.0 / (group["std_error"] ** 2)
@@ -59,728 +55,293 @@ def prepare_primary_data(train_df):
 
     primary_clean = primary.groupby("SMILES").apply(weighted_agg, include_groups=False).reset_index()
 
-    # Add counter-assay data for selectivity signal
-    counter = train_df[
-        train_df["counter_assay_pEC50"].notna()
-        & train_df["SMILES"].notna()
-        & (train_df["SMILES"] != "")
-    ].copy()
-
+    counter = train_df[train_df["counter_assay_pEC50"].notna() & train_df["SMILES"].notna() & (train_df["SMILES"] != "")].copy()
     if len(counter) > 0:
         counter["counter_pEC50"] = counter["counter_assay_pEC50"].astype(float)
-        counter_agg = counter.groupby("SMILES")["counter_pEC50"].mean().reset_index()
-        primary_clean = primary_clean.merge(counter_agg, on="SMILES", how="left")
+        primary_clean = primary_clean.merge(counter.groupby("SMILES")["counter_pEC50"].mean().reset_index(), on="SMILES", how="left")
 
-    primary_clean = primary_clean[
-        (primary_clean["pEC50"] >= 1.5) & (primary_clean["pEC50"] <= 8.0)
-    ].reset_index(drop=True)
-
-    return primary_clean
-
+    return primary_clean[(primary_clean["pEC50"] >= 1.5) & (primary_clean["pEC50"] <= 8.0)].reset_index(drop=True)
 
 # ============================================================================
-# MOLECULAR FINGERPRINTING (RDKit)
+# FEATURE ENGINEERING
 # ============================================================================
 
-def compute_morgan_fps(smis, radius=2, n_bits=2048, n_jobs=-1):
-    def _get_fp(s):
-        # Instantiate inside the worker to avoid pickling the C++ object
-        gen = rdFingerprintGenerator.GetMorganGenerator(radius=radius, fpSize=n_bits)
+def compute_all_rdkit_features(smis, n_jobs=-1):
+    def _get_features(s):
         mol = Chem.MolFromSmiles(s)
-        if mol is None:
-            return np.zeros(n_bits, dtype=np.float32)
-        return gen.GetFingerprintAsNumPy(mol).astype(np.float32)
-        
-    fps = Parallel(n_jobs=n_jobs)(delayed(_get_fp)(s) for s in smis)
-    return np.array(fps)
+        if mol is None: return np.zeros(10420, dtype=np.float32)
 
+        m1 = rdFingerprintGenerator.GetMorganGenerator(radius=1, fpSize=2048)
+        m1c = rdFingerprintGenerator.GetMorganGenerator(radius=1, fpSize=2048, countSimulation=True)
+        m3c = rdFingerprintGenerator.GetMorganGenerator(radius=3, fpSize=2048, countSimulation=True)
+        ap = rdFingerprintGenerator.GetAtomPairGenerator(fpSize=2048)
+        tt = rdFingerprintGenerator.GetTopologicalTorsionGenerator(fpSize=2048)
 
-def compute_atompair_fps(smis, n_bits=2048, n_jobs=-1):
-    def _get_fp(s):
-        # Instantiate inside the worker
-        gen = rdFingerprintGenerator.GetAtomPairGenerator(fpSize=n_bits)
-        mol = Chem.MolFromSmiles(s)
-        if mol is None:
-            return np.zeros(n_bits, dtype=np.float32)
-        return gen.GetFingerprintAsNumPy(mol).astype(np.float32)
-        
-    fps = Parallel(n_jobs=n_jobs)(delayed(_get_fp)(s) for s in smis)
-    return np.array(fps)
+        fps = [m1.GetFingerprintAsNumPy(mol).astype(np.float32), m1c.GetFingerprintAsNumPy(mol).astype(np.float32),
+               m3c.GetFingerprintAsNumPy(mol).astype(np.float32), ap.GetFingerprintAsNumPy(mol).astype(np.float32),
+               tt.GetFingerprintAsNumPy(mol).astype(np.float32)]
 
+        maccs_arr = np.zeros(167, dtype=np.float32)
+        for bit in MACCSkeys.GenMACCSKeys(mol).GetOnBits(): maccs_arr[bit] = 1.0
+        fps.append(maccs_arr)
 
-def compute_torsion_fps(smis, n_bits=2048, n_jobs=-1):
-    def _get_fp(s):
-        # Instantiate inside the worker
-        gen = rdFingerprintGenerator.GetTopologicalTorsionGenerator(fpSize=n_bits)
-        mol = Chem.MolFromSmiles(s)
-        if mol is None:
-            return np.zeros(n_bits, dtype=np.float32)
-        return gen.GetFingerprintAsNumPy(mol).astype(np.float32)
-        
-    fps = Parallel(n_jobs=n_jobs)(delayed(_get_fp)(s) for s in smis)
-    return np.array(fps)
+        physchem_keys = ["MolWt", "MolLogP", "TPSA", "NumHDonors", "NumHAcceptors", "NumRotatableBonds", "NumAromaticRings", "NumAliphaticRings", "NumHeteroatoms", "HeavyAtomCount", "RingCount", "LabuteASA", "HeavyAtomMolWt"]
+        fps.append(np.array([float(getattr(Descriptors, name)(mol)) for name in physchem_keys], dtype=np.float32))
 
-def compute_maccs_fps(smis, n_jobs=-1):
-    """Compute MACCS keys fingerprints (167-bit) in parallel."""
-    from rdkit.Chem import MACCSkeys
+        return np.concatenate(fps)
+
+    return np.array(Parallel(n_jobs=n_jobs)(delayed(_get_features)(s) for s in smis))
+
+def get_raw_osmordred(smis, osmordred_df):
+    """Safely extracts raw arrays. reindex() prevents KeyErrors if test SMILES are missing."""
+    features = osmordred_df.set_index("SMILES").reindex(smis).drop(columns=["SMILES"], errors="ignore").values.astype(np.float32)
+    return np.where(np.isinf(features), np.nan, features)
+
+# ============================================================================
+# MODELING (PYTORCH LIGHTNING / SKLEARN)
+# ============================================================================
+
+def build_and_train_pl(train_smis, train_ys, val_smis=None, val_ys=None, model_type='chemprop', 
+                       max_epochs=80, patience=12, checkpoint_dir="", n_tasks=1, mode='search'):
+    """Unified wrapper handling both 'search' (find best epoch) and 'retrain' (100% data + SWA) modes."""
+    train_ys = np.atleast_2d(train_ys)
+    if train_ys.shape[0] == 1: train_ys = train_ys.T
     
-    def _get_fp(s):
-        mol = Chem.MolFromSmiles(s)
-        if mol is None:
-            return np.zeros(167, dtype=np.float32)
-        fp = MACCSkeys.GenMACCSKeys(mol)
-        arr = np.zeros(167, dtype=np.float32)
-        for bit in fp.GetOnBits():
-            arr[bit] = 1.0
-        return arr
-        
-    fps = Parallel(n_jobs=n_jobs)(delayed(_get_fp)(s) for s in smis)
-    return np.array(fps)
-
-
-def compute_morgan_count_fps(smis, radius=2, n_bits=2048, n_jobs=-1):
-    """Compute Morgan count fingerprints (not binary)."""
-    def _get_fp(s):
-        gen = rdFingerprintGenerator.GetMorganGenerator(
-            radius=radius, fpSize=n_bits, countSimulation=True
-        )
-        mol = Chem.MolFromSmiles(s)
-        if mol is None:
-            return np.zeros(n_bits, dtype=np.float32)
-        return gen.GetFingerprintAsNumPy(mol).astype(np.float32)
-        
-    fps = Parallel(n_jobs=n_jobs)(delayed(_get_fp)(s) for s in smis)
-    return np.array(fps)
-
-
-def compute_physchem_descriptors(smis, n_jobs=-1):
-    """Compute 16 RDKit physicochemical descriptors."""
-    from rdkit.Chem import Descriptors
-    
-    DESCRIPTORS = [
-        "MolWt", "MolLogP", "TPSA", "NumHDonors", "NumHAcceptors",
-        "NumRotatableBonds", "NumAromaticRings", "NumAliphaticRings",
-        "NumHeteroatoms", "HeavyAtomCount", "RingCount",
-        "LabuteASA", "HeavyAtomMolWt",
-    ]
-    
-    def _get_desc(s):
-        mol = Chem.MolFromSmiles(s)
-        if mol is None:
-            return np.zeros(len(DESCRIPTORS), dtype=np.float32)
-        return np.array([
-            float(getattr(Descriptors, name)(mol)) for name in DESCRIPTORS
-        ], dtype=np.float32)
-        
-    fps = Parallel(n_jobs=n_jobs)(delayed(_get_desc)(s) for s in smis)
-    return np.array(fps)
-
-
-def load_osmordred_features(smis, osmordred_df):
-    """Load osmordred features for given SMILES, handling nulls and infs."""
-    osmordred = osmordred_df.set_index("SMILES").loc[smis].reset_index()
-    feat_cols = [c for c in osmordred.columns if c != "SMILES"]
-    features = osmordred[feat_cols].values.astype(np.float32)
-    features = np.where(np.isinf(features), np.nan, features)
-    mask = np.isnan(features)
-    col_null_ratio = mask.sum(axis=0) / len(features)
-    drop_cols = col_null_ratio > 0.1
-    features = features[:, ~drop_cols]
-    remaining_nan = np.isnan(features)
-    col_means = np.nanmean(features, axis=0)
-    col_means = np.where(np.isnan(col_means), 0, col_means)
-    features = np.where(remaining_nan, col_means, features)
-    features = np.clip(features, -1e6, 1e6)
-    return features
-
-
-def train_chemeleon(smis, ys, val_smis, val_ys, batch_size=64,
-                    max_epochs=80, checkpoint_dir="chemeleon", n_tasks=1):
-    """Finetune CheMeleon foundation model for regression."""
-    import torch as pt
-
-    if ys.ndim == 1:
-        ys = ys.reshape(-1, 1)
-    if val_ys.ndim == 1:
-        val_ys = val_ys.reshape(-1, 1)
-
     featurizer = CuikmolmakerMolGraphFeaturizer()
-    chemeleon_mp = pt.load("chemeleon_mp.pt", weights_only=True)
-    mp = nn.BondMessagePassing(**chemeleon_mp['hyper_parameters'])
-    mp.load_state_dict(chemeleon_mp['state_dict'])
 
-    train_data = [
-        data.LazyMoleculeDatapoint(s, y=y.tolist() if hasattr(y, 'tolist') else [y])
-        for s, y in zip(smis, ys)
-    ]
-    val_data = [
-        data.LazyMoleculeDatapoint(s, y=y.tolist() if hasattr(y, 'tolist') else [y])
-        for s, y in zip(val_smis, val_ys)
-    ]
-
+    train_data = [data.LazyMoleculeDatapoint(s, y=y.tolist()) for s, y in zip(train_smis, train_ys)]
     train_dset = data.CuikmolmakerDataset(train_data, featurizer)
-    output_scaler = train_dset.normalize_targets()
-    val_dset = data.CuikmolmakerDataset(val_data, featurizer)
-    val_dset.normalize_targets(output_scaler)
+    out_scaler = train_dset.normalize_targets()
+    train_loader = data.build_dataloader(train_dset, batch_size=64, num_workers=2, persistent_workers=True)
+    out_transform = nn.transforms.UnscaleTransform.from_standard_scaler(out_scaler)
 
-    train_loader = data.build_dataloader(train_dset, batch_size=batch_size, num_workers=2, persistent_workers=True)
-    val_loader = data.build_dataloader(val_dset, batch_size=batch_size, shuffle=False, num_workers=2, persistent_workers=True)
+    from chemprop.nn.metrics import MAE
+    if model_type == 'chemeleon':
+        ckpt = torch.load("chemeleon_mp.pt", weights_only=True)
+        mp = nn.BondMessagePassing(**ckpt['hyper_parameters'])
+        mp.load_state_dict(ckpt['state_dict'])
+        ffn = nn.RegressionFFN(n_tasks=n_tasks, output_transform=out_transform, input_dim=mp.output_dim, hidden_dim=mp.output_dim, n_layers=2, dropout=0.2, criterion=MAE())
+        model = models.MPNN(mp, nn.NormAggregation(), ffn, batch_norm=False, init_lr=1e-5, max_lr=1e-4, final_lr=1e-5)
+        swa_lr = 1e-5
+    else:
+        ffn = nn.RegressionFFN(n_tasks=n_tasks, output_transform=out_transform, input_dim=512, hidden_dim=512, n_layers=2, dropout=0.1, criterion=MAE())
+        model = models.MPNN(nn.BondMessagePassing(d_h=512, depth=5), nn.NormAggregation(), ffn, batch_norm=True, init_lr=1e-4, max_lr=5e-4, final_lr=1e-4)
+        swa_lr = 1e-4
 
-    output_transform = nn.transforms.UnscaleTransform.from_standard_scaler(output_scaler)
-    ffn = nn.RegressionFFN(
-        n_tasks=n_tasks,
-        output_transform=output_transform,
-        input_dim=mp.output_dim,
-        hidden_dim=mp.output_dim,
-        n_layers=2,
-        dropout=0.2,
-    )
-    model = models.MPNN(
-        mp,
-        nn.NormAggregation(),
-        ffn,
-        batch_norm=False,
-        init_lr=1e-5,
-        max_lr=1e-4,
-        final_lr=1e-5,
-    )
+    if mode == 'search':
+        val_ys = np.atleast_2d(val_ys)
+        if val_ys.shape[0] == 1: val_ys = val_ys.T
+        val_data = [data.LazyMoleculeDatapoint(s, y=y.tolist()) for s, y in zip(val_smis, val_ys)]
+        val_dset = data.CuikmolmakerDataset(val_data, featurizer)
+        val_dset.normalize_targets(out_scaler)
+        val_loader = data.build_dataloader(val_dset, batch_size=64, shuffle=False, num_workers=2, persistent_workers=True)
 
-    checkpoint_cb = ModelCheckpoint(
-        dirpath=f"checkpoints/{checkpoint_dir}",
-        filename="best-{epoch:02d}-{val_loss:.4f}",
-        monitor="val_loss",
-        mode="min",
-        save_top_k=1,
-        save_last=True,
-    )
-    early_stop_cb = EarlyStopping(
-        monitor="val_loss",
-        patience=25,
-        mode="min",
-    )
+        ckpt_cb = ModelCheckpoint(dirpath=f"checkpoints/{checkpoint_dir}", filename="best-epoch={epoch:02d}-val_loss={val_loss:.4f}", monitor="val_loss", mode="min", save_top_k=1)
+        trainer = pl.Trainer(max_epochs=max_epochs, accelerator="auto", devices=1, callbacks=[ckpt_cb, EarlyStopping(monitor="val_loss", patience=patience, mode="min")], logger=False, enable_progress_bar=False, enable_model_summary=False, deterministic=True)
+        trainer.fit(model, train_loader, val_loader)
+        
+        preds = torch.cat(trainer.predict(trainer.lightning_module, val_loader, ckpt_path=ckpt_cb.best_model_path), dim=0).cpu().numpy()
+        preds = preds.ravel() if n_tasks == 1 else preds
+        
+        best_epoch = int(re.search(r'epoch=(\d+)', ckpt_cb.best_model_path).group(1))
+        return preds, best_epoch
 
-    trainer = pl.Trainer(
-        max_epochs=max_epochs,
-        accelerator="auto",
-        devices=1,
-        callbacks=[checkpoint_cb, early_stop_cb],
-        logger=False,
-        enable_progress_bar=False,
-        enable_model_summary=False,
-        deterministic=True,  # <-- REPRODUCIBILITY, REQUIRED!
-    )
+    elif mode == 'retrain':
+        swa_cb = StochasticWeightAveraging(swa_lrs=swa_lr)
+        trainer = pl.Trainer(max_epochs=max_epochs, accelerator="auto", devices=1, callbacks=[swa_cb], logger=False, enable_progress_bar=False, enable_model_summary=False, deterministic=True)
+        trainer.fit(model, train_loader)
+        
+        return trainer, model
 
-    trainer.fit(model, train_loader, val_loader)
-
-    preds = trainer.predict(trainer.lightning_module, val_loader,
-                            ckpt_path=checkpoint_cb.best_model_path)
-    preds = pt.cat(preds, dim=0).cpu().numpy()
-
-    if n_tasks == 1:
-        preds = preds.ravel()
-
-    return preds, trainer, checkpoint_cb
-
-
-# ============================================================================
-# CHEMPROP MPNN MODEL
-# ============================================================================
-
-def train_chemprop(smis, ys, val_smis, val_ys,
-                   d_h=512, depth=5, n_layers=2, hidden_dim=512,
-                   batch_size=64, max_epochs=80, checkpoint_dir="chemprop_mt",
-                   n_tasks=2):
-    """Train a chemprop MPNN for regression."""
-    if ys.ndim == 1:
-        ys = ys.reshape(-1, 1)
-    if val_ys.ndim == 1:
-        val_ys = val_ys.reshape(-1, 1)
-
-    train_data = [
-        data.LazyMoleculeDatapoint(s, y=y.tolist() if hasattr(y, 'tolist') else [y])
-        for s, y in zip(smis, ys)
-    ]
-    val_data = [
-        data.LazyMoleculeDatapoint(s, y=y.tolist() if hasattr(y, 'tolist') else [y])
-        for s, y in zip(val_smis, val_ys)
-    ]
-
-    train_dset = data.CuikmolmakerDataset(train_data)
-    output_scaler = train_dset.normalize_targets()
-    val_dset = data.CuikmolmakerDataset(val_data)
-    val_dset.normalize_targets(output_scaler)
-
-    train_loader = data.build_dataloader(train_dset, batch_size=batch_size, num_workers=2, persistent_workers=True)
-    val_loader = data.build_dataloader(val_dset, batch_size=batch_size, shuffle=False, num_workers=2, persistent_workers=True)
-
-    output_transform = nn.transforms.UnscaleTransform.from_standard_scaler(output_scaler)
-    ffn = nn.RegressionFFN(
-        n_tasks=n_tasks,
-        output_transform=output_transform,
-        input_dim=d_h,
-        hidden_dim=hidden_dim,
-        n_layers=n_layers,
-        dropout=0.1,
-    )
-    model = models.MPNN(
-        nn.BondMessagePassing(d_h=d_h, depth=depth),
-        nn.NormAggregation(),
-        ffn,
-        batch_norm=True,
-        init_lr=1e-4,
-        max_lr=5e-4,
-        final_lr=1e-4,
-    )
-
-    checkpoint_cb = ModelCheckpoint(
-        dirpath=f"checkpoints/{checkpoint_dir}",
-        filename="best-{epoch:02d}-{val_loss:.4f}",
-        monitor="val_loss",
-        mode="min",
-        save_top_k=1,
-        save_last=True,
-    )
-    early_stop_cb = EarlyStopping(
-        monitor="val_loss",
-        patience=12,
-        mode="min",
-    )
-
-    trainer = pl.Trainer(
-        max_epochs=max_epochs,
-        accelerator="auto",
-        devices=1,
-        callbacks=[checkpoint_cb, early_stop_cb],
-        logger=False,
-        enable_progress_bar=False,
-        enable_model_summary=False,
-        deterministic=True,  # <-- REPRODUCIBILITY, REQUIRED!
-    )
-
-    trainer.fit(model, train_loader, val_loader)
-
-    # Get val predictions
-    preds = trainer.predict(trainer.lightning_module, val_loader,
-                            ckpt_path=checkpoint_cb.best_model_path)
-    preds = torch.cat(preds, dim=0).cpu().numpy()
-
-    if n_tasks == 1:
-        preds = preds.ravel()
-
-    return preds, trainer, checkpoint_cb
-
-
-def predict_chemprop(trainer, checkpoint_path, test_smiles, n_tasks=2):
-    """Get predictions from a trained chemprop model."""
-    test_data = [data.LazyMoleculeDatapoint(s) for s in test_smiles]
-    test_dset = data.CuikmolmakerDataset(test_data)
-    test_loader = data.build_dataloader(test_dset, batch_size=64, shuffle=False, num_workers=2, persistent_workers=True)
-
-    preds = trainer.predict(trainer.lightning_module, test_loader,
-                             ckpt_path=checkpoint_path)
-    preds = torch.cat(preds, dim=0).cpu().numpy()
-
-    if n_tasks == 1:
-        return preds.ravel()
-    return preds
-
-
-# ============================================================================
-# SKLEARN MODEL
-# ============================================================================
+def predict_pl_model(trainer, model, test_smiles, n_tasks=1):
+    featurizer = CuikmolmakerMolGraphFeaturizer()
+    dset = data.CuikmolmakerDataset([data.LazyMoleculeDatapoint(s) for s in test_smiles], featurizer)
+    loader = data.build_dataloader(dset, batch_size=64, shuffle=False, num_workers=2, persistent_workers=True)
+    preds = torch.cat(trainer.predict(model, loader, ckpt_path=None), dim=0).cpu().numpy() 
+    return preds.ravel() if n_tasks == 1 else preds
 
 def train_sklearn_model(X_train, y_train, X_val, y_val):
-    """Train a single sklearn model and return predictions + metrics."""
-    scaler = StandardScaler()
-    X_train_sc = scaler.fit_transform(X_train)
-    X_val_sc = scaler.transform(X_val)
-
-    model = XGBRegressor(
-        n_estimators=500, 
-        max_depth=5, 
-        learning_rate=0.05,
-        subsample=0.8, 
-        random_state=SEED,
-        tree_method="hist", 
-        device="cuda",
+    """Uses a pipeline to safeguard against NaNs during featurization."""
+    pipeline = make_pipeline(
+        SimpleImputer(strategy='mean'), 
+        StandardScaler(), 
+        XGBRegressor(n_estimators=500, max_depth=5, learning_rate=0.05, subsample=0.8, random_state=SEED, tree_method="hist", device="cuda", objective='reg:absoluteerror')
     )
-
-    model.fit(X_train_sc, y_train)
-    pred = model.predict(X_val_sc)
-    val_mae = mean_absolute_error(y_val, pred)
-
-    return (model, scaler), pred, val_mae
-
-
-# ============================================================================
-# ENSEMBLE WEIGHT OPTIMIZATION
-# ============================================================================
+    pipeline.fit(X_train, y_train)
+    pred = pipeline.predict(X_val)
+    return pipeline, pred, mean_absolute_error(y_val, pred)
 
 def optimize_ensemble_weights(val_preds_dict, y_val):
-    """Ridge stacking meta-learner on top model predictions."""
     names = sorted(val_preds_dict.keys())
-    n_models = len(names)
-    X_meta = np.column_stack([val_preds_dict[name] for name in names])
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X_meta)
-    meta = Ridge(alpha=1.0, random_state=SEED)
-    meta.fit(X_scaled, y_val)
-    coefs = meta.coef_
-    weights = np.abs(coefs)
-    total = weights.sum()
-    weights = weights / total if total > 0 else np.ones(n_models) / n_models
-    weight_dict = dict(zip(names, weights))
-    pred = meta.predict(X_scaled)
-    best_mae = mean_absolute_error(y_val, pred)
-    return weight_dict, best_mae
-
+    X_scaled = StandardScaler().fit_transform(np.column_stack([val_preds_dict[name] for name in names]))
+    meta = LinearRegression(positive=True).fit(X_scaled, y_val)
+    weights = np.abs(meta.coef_) / np.sum(np.abs(meta.coef_)) if np.sum(np.abs(meta.coef_)) > 0 else np.ones(len(names)) / len(names)
+    return dict(zip(names, weights)), mean_absolute_error(y_val, meta.predict(X_scaled))
 
 # ============================================================================
-# MAIN EXPERIMENT
+# MAIN PIPELINE
 # ============================================================================
 
 def preprocess_data(train, test=None):
-    """Full data preprocessing pipeline."""
     print("Preparing primary assay data...")
     primary_clean = prepare_primary_data(train)
     print(f"  Primary data: {len(primary_clean)} unique compounds")
     return primary_clean, test
 
-
-def configure_model():
-    return None
-
-
-def train_model(model_config, processed_data):
-    """Train models with CV-based weight optimization."""
+def train_model(processed_data):
     primary_clean, test = processed_data
     os.makedirs("checkpoints/chemprop_mt", exist_ok=True)
 
-    smis = primary_clean["SMILES"].values
-    y_pEC50 = primary_clean["pEC50"].values
-    y_Emax = primary_clean["Emax"].values
-
-    # Stratified train/val split
-    train_idx, val_idx = train_test_split(
-        np.arange(len(smis)), test_size=0.2, random_state=SEED,
-        stratify=np.digitize(y_pEC50, bins=[4.0, 5.0, 6.0, 8.0]),
-    )
-
+    smis, y_pEC50, y_Emax = primary_clean["SMILES"].values, primary_clean["pEC50"].values, primary_clean["Emax"].values
+    train_idx, val_idx = train_test_split(np.arange(len(smis)), test_size=0.2, random_state=SEED, stratify=np.digitize(y_pEC50, bins=[4.0, 5.0, 6.0, 8.0]))
     train_smis, val_smis = smis[train_idx], smis[val_idx]
     train_pec50, val_pec50 = y_pEC50[train_idx], y_pEC50[val_idx]
-    train_Emax, val_Emax = y_Emax[train_idx], y_Emax[val_idx]
 
-    # Load osmordred features
-    osmordred_train = pd.read_parquet("train_osmordred_features.parquet")
-    osmordred_train = osmordred_train.groupby("SMILES", as_index=False).mean(numeric_only=True)
-
-    print(f"\nTrain/Val split: {len(train_smis)} train, {len(val_smis)} val")
+    osmordred_train = pd.read_parquet("train_osmordred_features.parquet").groupby("SMILES", as_index=False).mean(numeric_only=True)
 
     # -------------------------------------------------------------------------
-    # Phase 1: Train models on train/val to get val predictions + weights
+    # Phase 1: Search (Find Best Epochs and Weights on 80/20 Split)
     # -------------------------------------------------------------------------
-    print("\n--- Phase 1: Training models on train/val split ---")
-
-    print("\n  Chemprop Multi-Task...")
-    train_mt = np.column_stack([train_pec50, train_Emax])
-    val_mt = np.column_stack([val_pec50, val_Emax])
-    mt_preds, _, _ = train_chemprop(
-        train_smis, train_mt, val_smis, val_mt,
-        d_h=512, depth=5, n_layers=2, hidden_dim=512,
-        checkpoint_dir="chemprop_mt", n_tasks=2,
+    print("\n--- Phase 1: Search Phase (80/20 Split) ---")
+    
+    print("\n  Chemprop Multi-Task Search...")
+    mt_preds, mt_best_epoch = build_and_train_pl(
+        train_smis, np.column_stack([train_pec50, y_Emax[train_idx]]), 
+        val_smis, np.column_stack([val_pec50, y_Emax[val_idx]]), 
+        'chemprop', max_epochs=80, patience=12, checkpoint_dir="chemprop_mt", n_tasks=2, mode='search'
     )
-    mt_pec50 = mt_preds[:, 0]
-    print(f"    MAE (pEC50): {mean_absolute_error(val_pec50, mt_pec50):.4f}")
+    print(f"    MAE (pEC50): {mean_absolute_error(val_pec50, mt_preds[:, 0]):.4f} | Best Epoch: {mt_best_epoch}")
 
-    # CheMeleon foundation model (finetuned, low LR)
-    print("\n  CheMeleon Foundation...")
-    ch_preds, _, _ = train_chemeleon(
-        train_smis, train_pec50, val_smis, val_pec50,
-        checkpoint_dir="chemeleon", n_tasks=1,
+    print("\n  CheMeleon Foundation Search...")
+    ch_preds, ch_best_epoch = build_and_train_pl(
+        train_smis, train_pec50, val_smis, val_pec50, 
+        'chemeleon', max_epochs=80, patience=25, checkpoint_dir="chemeleon", n_tasks=1, mode='search'
     )
-    print(f"    MAE (pEC50): {mean_absolute_error(val_pec50, ch_preds):.4f}")
-
-    # Sklearn with fingerprints (baseline)
-    sk_trained = {}
-    sk_preds_dict = {}
+    print(f"    MAE (pEC50): {mean_absolute_error(val_pec50, ch_preds):.4f} | Best Epoch: {ch_best_epoch}")
 
     print("\n  Sklearn (fingerprints)...")
-    X_train_fp = np.hstack([
-        compute_morgan_fps(train_smis, radius=1, n_bits=2048),
-        compute_morgan_count_fps(train_smis, radius=1, n_bits=2048),
-        compute_morgan_count_fps(train_smis, radius=3, n_bits=2048),
-        compute_atompair_fps(train_smis, n_bits=2048),
-        compute_torsion_fps(train_smis, n_bits=2048),
-        compute_maccs_fps(train_smis),
-        compute_physchem_descriptors(train_smis),
-    ])
-    X_val_fp = np.hstack([
-        compute_morgan_fps(val_smis, radius=1, n_bits=2048),
-        compute_morgan_count_fps(val_smis, radius=1, n_bits=2048),
-        compute_morgan_count_fps(val_smis, radius=3, n_bits=2048),
-        compute_atompair_fps(val_smis, n_bits=2048),
-        compute_torsion_fps(val_smis, n_bits=2048),
-        compute_maccs_fps(val_smis),
-        compute_physchem_descriptors(val_smis),
-    ])
-    sk_tr_fp, sk_pr_fp, sk_m_fp = train_sklearn_model(X_train_fp, train_pec50, X_val_fp, val_pec50)
-    sk_trained["concat"] = (sk_tr_fp, None)
-    sk_preds_dict["sklearn_concat"] = sk_pr_fp
+    X_train_fp, X_val_fp = compute_all_rdkit_features(train_smis), compute_all_rdkit_features(val_smis)
+    sk_trained, sk_preds_dict = {}, {}
+    sk_trained["concat"], sk_preds_dict["sklearn_concat"], sk_m_fp = train_sklearn_model(X_train_fp, train_pec50, X_val_fp, val_pec50)
     print(f"    Sklearn concat MAE: {sk_m_fp:.4f}")
 
-    # Ridge on osmordred features (lightweight, less overfitting)
     print("\n  Ridge (osmordred)...")
-    X_train_osm = load_osmordred_features(train_smis, osmordred_train)
-    X_val_osm = load_osmordred_features(val_smis, osmordred_train)
-    print(f"    Osmordred dim: {X_train_osm.shape[1]}")
-    osm_scaler = StandardScaler()
-    X_train_osm_sc = osm_scaler.fit_transform(X_train_osm)
-    X_val_osm_sc = osm_scaler.transform(X_val_osm)
-    best_ridge_m = 999
-    best_alpha = 10.0
-    best_ridge_pr = None
+    X_train_osm, X_val_osm = get_raw_osmordred(train_smis, osmordred_train), get_raw_osmordred(val_smis, osmordred_train)
+    
+    best_ridge_m, best_alpha, best_ridge_pr = 999, 10.0, None
     for alpha in [1.0, 3.0, 5.0, 10.0, 20.0, 50.0, 100.0]:
-        ridge = Ridge(alpha=alpha, random_state=SEED)
-        ridge.fit(X_train_osm_sc, train_pec50)
-        pr = ridge.predict(X_val_osm_sc)
-        m = mean_absolute_error(val_pec50, pr)
-        if m < best_ridge_m:
-            best_ridge_m = m
-            best_alpha = alpha
-            best_ridge_pr = pr
-    print(f"    Ridge osmordred MAE: {best_ridge_m:.4f} (alpha={best_alpha})")
+        ridge_pipe = make_pipeline(SimpleImputer(strategy='mean'), StandardScaler(), Ridge(alpha=alpha, random_state=SEED))
+        ridge_pipe.fit(X_train_osm, train_pec50)
+        pr = ridge_pipe.predict(X_val_osm)
+        
+        if (m := mean_absolute_error(val_pec50, pr)) < best_ridge_m:
+            best_ridge_m, best_alpha, best_ridge_pr = m, alpha, pr
+            
     sk_preds_dict["ridge_osmordred"] = best_ridge_pr
+    print(f"    Ridge osmordred MAE: {best_ridge_m:.4f} (alpha={best_alpha})")
 
-    # Ensemble weights
     print("\n--- Optimizing Ensemble Weights ---")
-    all_val_preds = {
-        "chemprop_mt": mt_pec50,
-        "chemeleon": ch_preds,
-    }
-    all_val_preds.update(sk_preds_dict)
-
+    all_val_preds = {"chemprop_mt": mt_preds[:, 0], "chemeleon": ch_preds, **sk_preds_dict}
     ensemble_weights, ensemble_mae = optimize_ensemble_weights(all_val_preds, val_pec50)
-    print(f"  Ensemble val MAE: {ensemble_mae:.4f}")
-    print("  Weights:")
-    for name, w in sorted(ensemble_weights.items(), key=lambda x: -x[1]):
-        print(f"    {name}: {w:.4f}")
-
-    # Find optimal Gaussian correction parameters via grid search (with uncertainty scaling)
-    from math import exp as math_exp
-    val_ensemble_pred = np.zeros(len(val_pec50))
-    tw = 0
-    for name, weight in ensemble_weights.items():
-        if name in all_val_preds:
-            val_ensemble_pred += weight * all_val_preds[name]
-            tw += weight
-    if tw > 0:
-        val_ensemble_pred /= tw
-
-    # Find optimal sigmoid correction parameters via grid search
-    from scipy.special import expit
-    val_ensemble_pred = np.zeros(len(val_pec50))
-    tw = 0
-    for name, weight in ensemble_weights.items():
-        if name in all_val_preds:
-            val_ensemble_pred += weight * all_val_preds[name]
-            tw += weight
-    if tw > 0:
-        val_ensemble_pred /= tw
-
-    best_corr_mae = ensemble_mae
-    best_params = (0.0, 0.0, 0.0)  # magnitude, center, scale
-    for mag in np.arange(0.05, 0.55, 0.05):
-        for center in np.arange(3.0, 4.5, 0.25):
-            for scale in [0.3, 0.4, 0.5, 0.6, 0.8]:
-                corr = -mag * expit(-(val_ensemble_pred - center) / scale)
-                corrected = val_ensemble_pred + corr
-                corrected = np.clip(corrected, 1.5, 8.0)
-                m = mean_absolute_error(val_pec50, corrected)
-                if m < best_corr_mae:
-                    best_corr_mae = m
-                    best_params = (mag, center, scale)
-
-    corr_mae = best_corr_mae
-    print(f"  Sigmoid correction val MAE: {corr_mae:.4f} (params: mag={best_params[0]:.2f}, center={best_params[1]:.2f}, scale={best_params[2]:.2f})")
+    print(f"  Ensemble val MAE: {ensemble_mae:.4f}\n  Weights:")
+    for name, w in sorted(ensemble_weights.items(), key=lambda x: -x[1]): print(f"    {name}: {w:.4f}")
 
     # -------------------------------------------------------------------------
-    # Phase 2: Train final models on FULL data for test predictions
+    # Phase 2: Retrain (100% Data, calculated epochs + 10%, SWA)
     # -------------------------------------------------------------------------
-    print("\n--- Phase 2: Training final models on full data ---")
-
-    full_targets_mt = np.column_stack([y_pEC50, y_Emax])
-
-    print("  Chemprop MT...")
-    _, final_mt_trainer, final_mt_cp = train_chemprop(
-        smis, full_targets_mt, smis, full_targets_mt,
-        d_h=512, depth=5, n_layers=2, hidden_dim=512,
-        checkpoint_dir="chemprop_mt", n_tasks=2,
+    print("\n--- Phase 2: Retrain Phase (100% Data + SWA) ---")
+    
+    target_mt_epochs = max(int(mt_best_epoch * 1.1), 1)
+    print(f"  Chemprop MT (Retraining blindly for {target_mt_epochs} epochs with SWA)...")
+    final_mt_trainer, final_mt_model = build_and_train_pl(
+        smis, np.column_stack([y_pEC50, y_Emax]), 
+        model_type='chemprop', max_epochs=target_mt_epochs, n_tasks=2, mode='retrain'
     )
 
-    # CheMeleon with hold-out val to prevent overfitting
-    print("  CheMeleon Foundation (hold-out val)...")
-    holdout_idx = np.arange(len(smis))
-    np.random.seed(SEED + 1)
-    np.random.shuffle(holdout_idx)
-    split_pt = int(0.8 * len(holdout_idx))
-    ch_train_smis = smis[holdout_idx[:split_pt]]
-    ch_train_y = y_pEC50[holdout_idx[:split_pt]]
-    ch_val_smis = smis[holdout_idx[split_pt:]]
-    ch_val_y = y_pEC50[holdout_idx[split_pt:]]
-    _, final_ch_trainer, final_ch_cp = train_chemeleon(
-        ch_train_smis, ch_train_y, ch_val_smis, ch_val_y,
-        checkpoint_dir="chemeleon", n_tasks=1,
+    target_ch_epochs = max(int(ch_best_epoch * 1.1), 1)
+    print(f"  CheMeleon Foundation (Retraining blindly for {target_ch_epochs} epochs with SWA)...")
+    final_ch_trainer, final_ch_model = build_and_train_pl(
+        smis, y_pEC50, 
+        model_type='chemeleon', max_epochs=target_ch_epochs, n_tasks=1, mode='retrain'
     )
 
-    # Sklearn on full data
-    sklearn_finals = {}
-    for name, (trained, _) in sk_trained.items():
-        print(f"  Sklearn {name} GB...")
-        X_full = np.hstack([
-            compute_morgan_fps(smis, radius=1, n_bits=2048),
-            compute_morgan_count_fps(smis, radius=1, n_bits=2048),
-            compute_morgan_count_fps(smis, radius=3, n_bits=2048),
-            compute_atompair_fps(smis, n_bits=2048),
-            compute_torsion_fps(smis, n_bits=2048),
-            compute_maccs_fps(smis),
-            compute_physchem_descriptors(smis),
-        ])
-        model_orig, _ = trained
-        scaler_final = StandardScaler()
-        X_scaled = scaler_final.fit_transform(X_full)
-        model_final = type(model_orig)(**model_orig.get_params())
-        model_final.fit(X_scaled, y_pEC50)
-        sklearn_finals[name] = (model_final, scaler_final)
+    sklearn_finals, X_full_fp = {}, compute_all_rdkit_features(smis)
+    for name, pipeline_orig in sk_trained.items():
+        print(f"  Sklearn {name} GB (Retraining on 100% data)...")
+        xgb_orig = pipeline_orig.named_steps['xgbregressor']
+        pipeline_new = make_pipeline(
+            SimpleImputer(strategy='mean'), 
+            StandardScaler(), 
+            type(xgb_orig)(**xgb_orig.get_params())
+        )
+        pipeline_new.fit(X_full_fp, y_pEC50)
+        sklearn_finals[name] = pipeline_new
 
-    # Ridge on full data
-    print("  Ridge osmordred GB...")
-    X_full_osm = load_osmordred_features(smis, osmordred_train)
-    osm_scaler_final = StandardScaler()
-    X_full_osm_sc = osm_scaler_final.fit_transform(X_full_osm)
-    ridge_final = Ridge(alpha=best_alpha, random_state=SEED)
-    ridge_final.fit(X_full_osm_sc, y_pEC50)
+    print("  Ridge osmordred GB (Retraining on 100% data)...")
+    ridge_final = make_pipeline(SimpleImputer(strategy='mean'), StandardScaler(), Ridge(alpha=best_alpha, random_state=SEED))
+    ridge_final.fit(get_raw_osmordred(smis, osmordred_train), y_pEC50)
 
-    # Load test osmordred
-    osmordred_test = pd.read_parquet("test_phase1_osmordred_features.parquet")
-    osmordred_test = osmordred_test.groupby("SMILES", as_index=False).mean(numeric_only=True)
+    osmordred_test = pd.read_parquet("test_phase1_osmordred_features.parquet").groupby("SMILES", as_index=False).mean(numeric_only=True)
 
     return {
-        "chemprop_mt_trainer": final_mt_trainer,
-        "chemprop_mt_cp": final_mt_cp,
-        "chemeleon_trainer": final_ch_trainer,
-        "chemeleon_cp": final_ch_cp,
-        "sklearn_finals": sklearn_finals,
-        "ridge_final": ridge_final,
-        "ridge_scaler": osm_scaler_final,
-        "osmordred_test": osmordred_test,
-        "ensemble_weights": ensemble_weights,
-        "ensemble_mae": ensemble_mae,
+        "chemprop_mt_trainer": final_mt_trainer, "chemprop_mt_model": final_mt_model,
+        "chemeleon_trainer": final_ch_trainer, "chemeleon_model": final_ch_model,
+        "sklearn_finals": sklearn_finals, "ridge_final": ridge_final,
+        "osmordred_test": osmordred_test, "ensemble_weights": ensemble_weights, "ensemble_mae": ensemble_mae,
         "test": test,
-        "corr_params": best_params if corr_mae < ensemble_mae else (0.0, 0.0, 0.0),
-        "corr_improvement": corr_mae - ensemble_mae,
     }
-
 
 def evaluate_model(model, test=None):
-    """Run inference on test set using all models and ensemble."""
-    if test is None:
-        test = model["test"]
+    if test is None: test = model["test"]
     test_smiles = test["SMILES"].values
-
     print("\n--- Generating Predictions ---")
 
-    # Chemprop
-    chemprop_mt_pred = predict_chemprop(
-        model["chemprop_mt_trainer"],
-        model["chemprop_mt_cp"].best_model_path,
-        test_smiles, n_tasks=2,
-    )[:, 0]
-
-    # CheMeleon
-    ch_test_data = [data.LazyMoleculeDatapoint(s) for s in test_smiles]
-    ch_test_dset = data.CuikmolmakerDataset(ch_test_data, CuikmolmakerMolGraphFeaturizer())
-    ch_test_loader = data.build_dataloader(ch_test_dset, batch_size=64, shuffle=False, num_workers=2, persistent_workers=True)
-    ch_preds = model["chemeleon_trainer"].predict(
-        model["chemeleon_trainer"].lightning_module, ch_test_loader,
-        ckpt_path=model["chemeleon_cp"].best_model_path)
-    ch_preds = torch.cat(ch_preds, dim=0).cpu().numpy().ravel()
+    chemprop_mt_pred = predict_pl_model(model["chemprop_mt_trainer"], model["chemprop_mt_model"], test_smiles, n_tasks=2)[:, 0]
+    ch_preds = predict_pl_model(model["chemeleon_trainer"], model["chemeleon_model"], test_smiles, n_tasks=1)
     print(f"  CheMeleon: [{ch_preds.min():.2f}, {ch_preds.max():.2f}]")
 
-     # Sklearn predictions
-    sk_test_preds = {}
-    for name, (model_inst, scaler) in model["sklearn_finals"].items():
-        X_test = np.hstack([
-            compute_morgan_fps(test_smiles, radius=1, n_bits=2048),
-            compute_morgan_count_fps(test_smiles, radius=1, n_bits=2048),
-            compute_morgan_count_fps(test_smiles, radius=3, n_bits=2048),
-            compute_atompair_fps(test_smiles, n_bits=2048),
-            compute_torsion_fps(test_smiles, n_bits=2048),
-            compute_maccs_fps(test_smiles),
-            compute_physchem_descriptors(test_smiles),
-        ])
-        X_scaled = scaler.transform(X_test)
-        sk_test_preds[f"sklearn_{name}"] = model_inst.predict(X_scaled)
+    sk_test_preds, X_test_fp = {}, compute_all_rdkit_features(test_smiles)
+    for name, pipeline in model["sklearn_finals"].items():
+        sk_test_preds[f"sklearn_{name}"] = pipeline.predict(X_test_fp)
 
-    # Ensemble - 3 models: CheMeleon + Chemprop + Ridge osmordred
     all_preds = {
-        "chemprop_mt": chemprop_mt_pred,
-        "chemeleon": ch_preds,
+        "chemprop_mt": chemprop_mt_pred, 
+        "chemeleon": ch_preds, 
+        "ridge_osmordred": model["ridge_final"].predict(get_raw_osmordred(test_smiles, model["osmordred_test"])),
+        **sk_test_preds
     }
-
-    # Ridge osmordred prediction
-    X_test_osm = load_osmordred_features(test_smiles, model["osmordred_test"])
-    X_test_osm_sc = model["ridge_scaler"].transform(X_test_osm)
-    ridge_pred = model["ridge_final"].predict(X_test_osm_sc)
-    all_preds["ridge_osmordred"] = ridge_pred
-
-    final_pred = np.mean(list(all_preds.values()), axis=0)
-
-    # Uncertainty-aware Gaussian correction (optimized for 4-model ensemble):
-    from math import exp
-    pred_array = np.array([all_preds[n] for n in all_preds])
-    pred_std = pred_array.std(axis=0)
-    uncertainty_scale = np.clip(pred_std / 0.30, 0.2, 2.5)
-    gaussian = np.array([exp(-0.5 * ((p - 3.70) / 0.5) ** 2) for p in final_pred])
-    correction = -0.42 * gaussian * uncertainty_scale
-    final_pred = final_pred + correction
-
+    
+    final_pred = np.zeros(len(test_smiles))
+    total_weight = 0
+    for name, pred in all_preds.items():
+        weight = model["ensemble_weights"].get(name, 0)
+        final_pred += weight * pred
+        total_weight += weight
+        
+    final_pred = (final_pred / total_weight) if total_weight > 0 else np.mean(list(all_preds.values()), axis=0)
+    
+    # Clip predictions to plausible target range
     final_pred = np.clip(final_pred, 1.5, 8.0)
 
     print(f"  Chemprop MT: [{chemprop_mt_pred.min():.2f}, {chemprop_mt_pred.max():.2f}]")
-    for name in sorted(sk_test_preds.keys()):
-        p = sk_test_preds[name]
-        print(f"  {name}:   [{p.min():.2f}, {p.max():.2f}]")
+    for name, p in sorted(sk_test_preds.items()): print(f"  {name}:   [{p.min():.2f}, {p.max():.2f}]")
     print(f"  Ensemble:    [{final_pred.min():.2f}, {final_pred.max():.2f}]")
 
-    # Evaluate
     if "pEC50" in test.columns:
-        y_true = test["pEC50"].values
-        mae = mean_absolute_error(y_true, final_pred)
-        print(f"\n  Final MAE on test: {mae:.4f}")
-
-        print("\n  Individual model MAEs:")
-        for name, pred in sorted(all_preds.items()):
-            m = mean_absolute_error(y_true, pred)
-            print(f"    {name}: {m:.4f}")
+        mae = mean_absolute_error(test["pEC50"].values, final_pred)
+        print(f"\n  Final MAE on test: {mae:.4f}\n  Individual model MAEs:")
+        for name, pred in sorted(all_preds.items()): print(f"    {name}: {mean_absolute_error(test['pEC50'].values, pred):.4f}")
     else:
         mae = model["ensemble_mae"]
         print(f"\n  No ground truth - using val MAE: {mae:.4f}")
 
-    # Save predictions
-    results = pd.DataFrame({
-        "Molecule Name": test["Molecule Name"].values,
-        "SMILES": test_smiles,
-        "Chemprop_MT": chemprop_mt_pred,
-    })
-    for name in sorted(sk_test_preds.keys()):
-        results[name] = sk_test_preds[name]
+    results = pd.DataFrame({"Molecule Name": test["Molecule Name"].values, "SMILES": test_smiles, "Chemprop_MT": chemprop_mt_pred})
+    for name, pred in sorted(sk_test_preds.items()): results[name] = pred
     results["Ensemble"] = final_pred
-    
     results.to_csv("predictions.csv", index=False)
     print("\n  Predictions saved to predictions.csv")
-
+    
     return mae
-
 
 if __name__ == "__main__":
     from datetime import datetime
@@ -797,29 +358,21 @@ if __name__ == "__main__":
     outfile = Path("results.csv")
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if not outfile.exists():
-        with open(outfile, "w") as f:
-            f.write("Timestamp,MAE,Execution Time\n")
+        with open(outfile, "w") as f: f.write("Timestamp,MAE,Execution Time\n")
 
     start_time = datetime.now()
-
     try:
         raw_data = load_data()
-        processed = preprocess_data(*raw_data)
-        model = configure_model()
-        model = train_model(model, processed)
-        mae = f"{evaluate_model(model):.4f}"
+        mae = f"{evaluate_model(train_model(preprocess_data(*raw_data))):.4f}"
     except Exception as e:
         import traceback
         traceback.print_exc()
         mae = f"\"CRASH ({e})\""
     finally:
-        # Safely delete checkpoints regardless of script success/failure
         if os.path.exists("checkpoints"):
             print("\nCleaning up checkpoint files...")
             shutil.rmtree("checkpoints")
 
     elapsed = (datetime.now() - start_time).total_seconds()
-    with open(outfile, "a") as f:
-        f.write(f"{now},{mae},{elapsed:.1f}s\n")
-    print(f"\nTotal time: {elapsed:.1f}s")
-    print(f"Result logged to results.csv")
+    with open(outfile, "a") as f: f.write(f"{now},{mae},{elapsed:.1f}s\n")
+    print(f"\nTotal time: {elapsed:.1f}s\nResult logged to results.csv")
