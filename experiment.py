@@ -486,7 +486,7 @@ def train_model(model_config, processed_data):
     val_mt = np.column_stack([val_pec50, val_Emax])
     mt_preds, _, _ = train_chemprop(
         train_smis, train_mt, val_smis, val_mt,
-        d_h=512, depth=5, n_layers=2, hidden_dim=512,
+        d_h=300, depth=6, n_layers=2, hidden_dim=300,
         checkpoint_dir="chemprop_mt", n_tasks=2,
     )
     mt_pec50 = mt_preds[:, 0]
@@ -613,7 +613,7 @@ def train_model(model_config, processed_data):
     print("  Chemprop MT...")
     _, final_mt_trainer, final_mt_cp = train_chemprop(
         smis, full_targets_mt, smis, full_targets_mt,
-        d_h=512, depth=5, n_layers=2, hidden_dim=512,
+        d_h=300, depth=6, n_layers=2, hidden_dim=300,
         checkpoint_dir="chemprop_mt", n_tasks=2,
     )
 
