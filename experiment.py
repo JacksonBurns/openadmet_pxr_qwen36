@@ -232,17 +232,17 @@ def train_chemeleon(smis, ys, val_smis, val_ys, batch_size=64,
         output_transform=output_transform,
         input_dim=mp.output_dim,
         hidden_dim=mp.output_dim,
-        n_layers=2,
-        dropout=0.2,
+        n_layers=3,
+        dropout=0.3,
     )
     model = models.MPNN(
         mp,
         nn.NormAggregation(),
         ffn,
         batch_norm=False,
-        init_lr=1e-5,
-        max_lr=1e-4,
-        final_lr=1e-5,
+        init_lr=2e-5,
+        max_lr=2e-4,
+        final_lr=2e-5,
     )
 
     checkpoint_cb = ModelCheckpoint(
