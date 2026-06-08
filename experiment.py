@@ -11,7 +11,7 @@ from sklearn.metrics import mean_absolute_error
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from scipy.optimize import minimize
-from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint, StochasticWeightAveraging
+from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from lightning.pytorch import seed_everything
 from lightning import pytorch as pl
 from chemprop import data, models, nn
@@ -195,8 +195,7 @@ def load_osmordred_features(smis, osmordred_df):
 
 
 def train_chemeleon(smis, ys, val_smis, val_ys, batch_size=64,
-                    max_epochs=80, checkpoint_dir="chemeleon", n_tasks=1,
-                    use_swa=False):
+                    max_epochs=80, checkpoint_dir="chemeleon", n_tasks=1):
     """Finetune CheMeleon foundation model for regression."""
     import torch as pt
 
@@ -254,54 +253,32 @@ def train_chemeleon(smis, ys, val_smis, val_ys, batch_size=64,
         save_top_k=1,
         save_last=True,
     )
+    early_stop_cb = EarlyStopping(
+        monitor="val_loss",
+        patience=25,
+        mode="min",
+    )
 
-    if use_swa:
-        swa_cb = StochasticWeightAveraging(
-            swa_lrs=1e-5,
-            swa_epoch_start=int(max_epochs * 0.5),
-        )
-        trainer = pl.Trainer(
-            max_epochs=max_epochs,
-            accelerator="auto",
-            devices=1,
-            callbacks=[checkpoint_cb, swa_cb],
-            logger=False,
-            enable_progress_bar=False,
-            enable_model_summary=False,
-            deterministic=True,
-        )
-        trainer.fit(model, train_loader)
-        swa_path = os.path.join(checkpoint_cb.dirpath, "swa_ckpt.ckpt")
-        trainer.save_checkpoint(swa_path)
-        preds = trainer.predict(trainer.lightning_module, val_loader,
-                                ckpt_path=swa_path)
-    else:
-        early_stop_cb = EarlyStopping(
-            monitor="val_loss",
-            patience=25,
-            mode="min",
-        )
-        trainer = pl.Trainer(
-            max_epochs=max_epochs,
-            accelerator="auto",
-            devices=1,
-            callbacks=[checkpoint_cb, early_stop_cb],
-            logger=False,
-            enable_progress_bar=False,
-            enable_model_summary=False,
-            deterministic=True,
-        )
-        trainer.fit(model, train_loader, val_loader)
-        preds = trainer.predict(trainer.lightning_module, val_loader,
-                                ckpt_path=checkpoint_cb.best_model_path)
+    trainer = pl.Trainer(
+        max_epochs=max_epochs,
+        accelerator="auto",
+        devices=1,
+        callbacks=[checkpoint_cb, early_stop_cb],
+        logger=False,
+        enable_progress_bar=False,
+        enable_model_summary=False,
+        deterministic=True,  # <-- REPRODUCIBILITY, REQUIRED!
+    )
 
+    trainer.fit(model, train_loader, val_loader)
+
+    preds = trainer.predict(trainer.lightning_module, val_loader,
+                            ckpt_path=checkpoint_cb.best_model_path)
     preds = pt.cat(preds, dim=0).cpu().numpy()
 
     if n_tasks == 1:
         preds = preds.ravel()
 
-    if use_swa:
-        return preds, trainer, swa_path
     return preds, trainer, checkpoint_cb
 
 
@@ -312,7 +289,7 @@ def train_chemeleon(smis, ys, val_smis, val_ys, batch_size=64,
 def train_chemprop(smis, ys, val_smis, val_ys,
                    d_h=512, depth=5, n_layers=2, hidden_dim=512,
                    batch_size=64, max_epochs=80, checkpoint_dir="chemprop_mt",
-                   n_tasks=2, use_swa=False):
+                   n_tasks=2):
     """Train a chemprop MPNN for regression."""
     if ys.ndim == 1:
         ys = ys.reshape(-1, 1)
@@ -363,54 +340,33 @@ def train_chemprop(smis, ys, val_smis, val_ys,
         save_top_k=1,
         save_last=True,
     )
+    early_stop_cb = EarlyStopping(
+        monitor="val_loss",
+        patience=12,
+        mode="min",
+    )
 
-    if use_swa:
-        swa_cb = StochasticWeightAveraging(
-            swa_lrs=1e-4,
-            swa_epoch_start=int(max_epochs * 0.5),
-        )
-        trainer = pl.Trainer(
-            max_epochs=max_epochs,
-            accelerator="auto",
-            devices=1,
-            callbacks=[checkpoint_cb, swa_cb],
-            logger=False,
-            enable_progress_bar=False,
-            enable_model_summary=False,
-            deterministic=True,
-        )
-        trainer.fit(model, train_loader)
-        swa_path = os.path.join(checkpoint_cb.dirpath, "swa_ckpt.ckpt")
-        trainer.save_checkpoint(swa_path)
-        preds = trainer.predict(trainer.lightning_module, val_loader,
-                                ckpt_path=swa_path)
-    else:
-        early_stop_cb = EarlyStopping(
-            monitor="val_loss",
-            patience=12,
-            mode="min",
-        )
-        trainer = pl.Trainer(
-            max_epochs=max_epochs,
-            accelerator="auto",
-            devices=1,
-            callbacks=[checkpoint_cb, early_stop_cb],
-            logger=False,
-            enable_progress_bar=False,
-            enable_model_summary=False,
-            deterministic=True,
-        )
-        trainer.fit(model, train_loader, val_loader)
-        preds = trainer.predict(trainer.lightning_module, val_loader,
-                                ckpt_path=checkpoint_cb.best_model_path)
+    trainer = pl.Trainer(
+        max_epochs=max_epochs,
+        accelerator="auto",
+        devices=1,
+        callbacks=[checkpoint_cb, early_stop_cb],
+        logger=False,
+        enable_progress_bar=False,
+        enable_model_summary=False,
+        deterministic=True,  # <-- REPRODUCIBILITY, REQUIRED!
+    )
 
+    trainer.fit(model, train_loader, val_loader)
+
+    # Get val predictions
+    preds = trainer.predict(trainer.lightning_module, val_loader,
+                            ckpt_path=checkpoint_cb.best_model_path)
     preds = torch.cat(preds, dim=0).cpu().numpy()
 
     if n_tasks == 1:
         preds = preds.ravel()
 
-    if use_swa:
-        return preds, trainer, swa_path
     return preds, trainer, checkpoint_cb
 
 
@@ -654,20 +610,26 @@ def train_model(model_config, processed_data):
 
     full_targets_mt = np.column_stack([y_pEC50, y_Emax])
 
-    print("  Chemprop MT (SWA)...")
+    print("  Chemprop MT...")
     _, final_mt_trainer, final_mt_cp = train_chemprop(
         smis, full_targets_mt, smis, full_targets_mt,
         d_h=512, depth=5, n_layers=2, hidden_dim=512,
         checkpoint_dir="chemprop_mt", n_tasks=2,
-        use_swa=True,
     )
 
-    # CheMeleon with full data (SWA)
-    print("  CheMeleon Foundation (SWA)...")
+    # CheMeleon with hold-out val to prevent overfitting
+    print("  CheMeleon Foundation (hold-out val)...")
+    holdout_idx = np.arange(len(smis))
+    np.random.seed(SEED + 1)
+    np.random.shuffle(holdout_idx)
+    split_pt = int(0.8 * len(holdout_idx))
+    ch_train_smis = smis[holdout_idx[:split_pt]]
+    ch_train_y = y_pEC50[holdout_idx[:split_pt]]
+    ch_val_smis = smis[holdout_idx[split_pt:]]
+    ch_val_y = y_pEC50[holdout_idx[split_pt:]]
     _, final_ch_trainer, final_ch_cp = train_chemeleon(
-        smis, y_pEC50, smis, y_pEC50,
+        ch_train_smis, ch_train_y, ch_val_smis, ch_val_y,
         checkpoint_dir="chemeleon", n_tasks=1,
-        use_swa=True,
     )
 
     # Sklearn on full data
@@ -730,7 +692,7 @@ def evaluate_model(model, test=None):
     # Chemprop
     chemprop_mt_pred = predict_chemprop(
         model["chemprop_mt_trainer"],
-        model["chemprop_mt_cp"],
+        model["chemprop_mt_cp"].best_model_path,
         test_smiles, n_tasks=2,
     )[:, 0]
 
@@ -740,7 +702,7 @@ def evaluate_model(model, test=None):
     ch_test_loader = data.build_dataloader(ch_test_dset, batch_size=64, shuffle=False, num_workers=2, persistent_workers=True)
     ch_preds = model["chemeleon_trainer"].predict(
         model["chemeleon_trainer"].lightning_module, ch_test_loader,
-        ckpt_path=model["chemeleon_cp"])
+        ckpt_path=model["chemeleon_cp"].best_model_path)
     ch_preds = torch.cat(ch_preds, dim=0).cpu().numpy().ravel()
     print(f"  CheMeleon: [{ch_preds.min():.2f}, {ch_preds.max():.2f}]")
 
