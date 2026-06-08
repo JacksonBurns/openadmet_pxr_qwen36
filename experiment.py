@@ -721,7 +721,7 @@ def evaluate_model(model, test=None):
         X_scaled = scaler.transform(X_test)
         sk_test_preds[f"sklearn_{name}"] = model_inst.predict(X_scaled)
 
-    # Ensemble - only top 2 models (CheMeleon + Chemprop)
+    # Ensemble - 3 models: CheMeleon + Chemprop + Ridge osmordred
     all_preds = {
         "chemprop_mt": chemprop_mt_pred,
         "chemeleon": ch_preds,
