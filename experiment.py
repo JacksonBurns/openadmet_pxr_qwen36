@@ -734,16 +734,6 @@ def evaluate_model(model, test=None):
     all_preds["ridge_osmordred"] = ridge_pred
 
     final_pred = np.mean(list(all_preds.values()), axis=0)
-
-    # Uncertainty-aware Gaussian correction (optimized for 4-model ensemble):
-    from math import exp
-    pred_array = np.array([all_preds[n] for n in all_preds])
-    pred_std = pred_array.std(axis=0)
-    uncertainty_scale = np.clip(pred_std / 0.30, 0.2, 2.5)
-    gaussian = np.array([exp(-0.5 * ((p - 3.70) / 0.5) ** 2) for p in final_pred])
-    correction = -0.42 * gaussian * uncertainty_scale
-    final_pred = final_pred + correction
-
     final_pred = np.clip(final_pred, 1.5, 8.0)
 
     print(f"  Chemprop MT: [{chemprop_mt_pred.min():.2f}, {chemprop_mt_pred.max():.2f}]")
