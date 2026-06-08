@@ -272,6 +272,7 @@ def train_chemeleon(smis, ys, val_smis, val_ys, batch_size=64,
         )
         trainer.fit(model, train_loader)
         swa_path = os.path.join(checkpoint_cb.dirpath, "swa_ckpt.ckpt")
+        trainer.save_checkpoint(swa_path)
         preds = trainer.predict(trainer.lightning_module, val_loader,
                                 ckpt_path=swa_path)
     else:
@@ -380,6 +381,7 @@ def train_chemprop(smis, ys, val_smis, val_ys,
         )
         trainer.fit(model, train_loader)
         swa_path = os.path.join(checkpoint_cb.dirpath, "swa_ckpt.ckpt")
+        trainer.save_checkpoint(swa_path)
         preds = trainer.predict(trainer.lightning_module, val_loader,
                                 ckpt_path=swa_path)
     else:
