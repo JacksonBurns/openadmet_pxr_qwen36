@@ -13,7 +13,7 @@ from joblib import Parallel, delayed
 from xgboost import XGBRegressor
 from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.metrics import mean_absolute_error
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import KFold
 from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import make_pipeline
@@ -191,94 +191,112 @@ def preprocess_data(train, test=None):
 def train_model(processed_data):
     primary_clean, test = processed_data
     os.makedirs("checkpoints/chemprop_mt", exist_ok=True)
+    os.makedirs("checkpoints/chemeleon", exist_ok=True)
 
     smis, y_pEC50, y_Emax = primary_clean["SMILES"].values, primary_clean["pEC50"].values, primary_clean["Emax"].values
-    train_idx, val_idx = train_test_split(np.arange(len(smis)), test_size=0.2, random_state=SEED, stratify=np.digitize(y_pEC50, bins=[4.0, 5.0, 6.0, 8.0]))
-    train_smis, val_smis = smis[train_idx], smis[val_idx]
-    train_pec50, val_pec50 = y_pEC50[train_idx], y_pEC50[val_idx]
 
     osmordred_train = pd.read_parquet("train_osmordred_features.parquet").groupby("SMILES", as_index=False).mean(numeric_only=True)
 
-    # -------------------------------------------------------------------------
-    # Phase 1: Search (Find Best Epochs and Weights on 80/20 Split)
-    # -------------------------------------------------------------------------
-    print("\n--- Phase 1: Search Phase (80/20 Split) ---")
-    
-    print("\n  Chemprop Multi-Task Search...")
-    mt_preds, mt_best_epoch = build_and_train_pl(
-        train_smis, np.column_stack([train_pec50, y_Emax[train_idx]]), 
-        val_smis, np.column_stack([val_pec50, y_Emax[val_idx]]), 
-        'chemprop', max_epochs=80, patience=12, checkpoint_dir="chemprop_mt", n_tasks=2, mode='search'
-    )
-    print(f"    MAE (pEC50): {mean_absolute_error(val_pec50, mt_preds[:, 0]):.4f} | Best Epoch: {mt_best_epoch}")
+    n_splits = 5
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=SEED)
 
-    print("\n  CheMeleon Foundation Search...")
-    ch_preds, ch_best_epoch = build_and_train_pl(
-        train_smis, train_pec50, val_smis, val_pec50, 
-        'chemeleon', max_epochs=80, patience=25, checkpoint_dir="chemeleon", n_tasks=1, mode='search'
-    )
-    print(f"    MAE (pEC50): {mean_absolute_error(val_pec50, ch_preds):.4f} | Best Epoch: {ch_best_epoch}")
-
-    print("\n  Sklearn (fingerprints)...")
-    X_train_fp, X_val_fp = compute_all_rdkit_features(train_smis), compute_all_rdkit_features(val_smis)
-    sk_trained, sk_preds_dict = {}, {}
-    sk_trained["concat"], sk_preds_dict["sklearn_concat"], sk_m_fp = train_sklearn_model(X_train_fp, train_pec50, X_val_fp, val_pec50)
-    print(f"    Sklearn concat MAE: {sk_m_fp:.4f}")
-
-    print("\n  Ridge (osmordred)...")
-    X_train_osm, X_val_osm = get_raw_osmordred(train_smis, osmordred_train), get_raw_osmordred(val_smis, osmordred_train)
-    
-    best_ridge_m, best_alpha, best_ridge_pr = 999, 10.0, None
-    for alpha in [1.0, 3.0, 5.0, 10.0, 20.0, 50.0, 100.0]:
-        ridge_pipe = make_pipeline(SimpleImputer(strategy='mean'), StandardScaler(), Ridge(alpha=alpha, random_state=SEED))
-        ridge_pipe.fit(X_train_osm, train_pec50)
-        pr = ridge_pipe.predict(X_val_osm)
-        
-        if (m := mean_absolute_error(val_pec50, pr)) < best_ridge_m:
-            best_ridge_m, best_alpha, best_ridge_pr = m, alpha, pr
-            
-    sk_preds_dict["ridge_osmordred"] = best_ridge_pr
-    print(f"    Ridge osmordred MAE: {best_ridge_m:.4f} (alpha={best_alpha})")
-
-    print("\n--- Optimizing Ensemble Weights ---")
-    all_val_preds = {"chemprop_mt": mt_preds[:, 0], "chemeleon": ch_preds, **sk_preds_dict}
-    ensemble_weights, ensemble_mae = optimize_ensemble_weights(all_val_preds, val_pec50)
-    print(f"  Ensemble val MAE: {ensemble_mae:.4f}\n  Weights:")
-    for name, w in sorted(ensemble_weights.items(), key=lambda x: -x[1]): print(f"    {name}: {w:.4f}")
+    mt_epochs_cv, ch_epochs_cv, ridge_alphas_cv = [], [], []
+    fold_maes = []
+    cumulative_preds = np.zeros(len(smis))
 
     # -------------------------------------------------------------------------
-    # Phase 2: Retrain (100% Data, calculated epochs + 10%, SWA)
+    # Phase 1: 5-Fold CV Search
+    # -------------------------------------------------------------------------
+    for fold, (train_idx, val_idx) in enumerate(kf.split(smis)):
+        print(f"\n--- Fold {fold + 1}/{n_splits} ---")
+        train_smis, val_smis = smis[train_idx], smis[val_idx]
+        train_pec50, val_pec50 = y_pEC50[train_idx], y_pEC50[val_idx]
+
+        print("\n  Chemprop Multi-Task Search...")
+        mt_preds, mt_best_epoch = build_and_train_pl(
+            train_smis, np.column_stack([train_pec50, y_Emax[train_idx]]),
+            val_smis, np.column_stack([val_pec50, y_Emax[val_idx]]),
+            'chemprop', max_epochs=80, patience=12, checkpoint_dir="chemprop_mt", n_tasks=2, mode='search'
+        )
+        print(f"    MAE (pEC50): {mean_absolute_error(val_pec50, mt_preds[:, 0]):.4f} | Best Epoch: {mt_best_epoch}")
+        mt_epochs_cv.append(mt_best_epoch)
+
+        print("\n  CheMeleon Foundation Search...")
+        ch_preds, ch_best_epoch = build_and_train_pl(
+            train_smis, train_pec50, val_smis, val_pec50,
+            'chemeleon', max_epochs=80, patience=25, checkpoint_dir="chemeleon", n_tasks=1, mode='search'
+        )
+        print(f"    MAE (pEC50): {mean_absolute_error(val_pec50, ch_preds):.4f} | Best Epoch: {ch_best_epoch}")
+        ch_epochs_cv.append(ch_best_epoch)
+
+        print("\n  Sklearn (fingerprints)...")
+        X_train_fp, X_val_fp = compute_all_rdkit_features(train_smis), compute_all_rdkit_features(val_smis)
+        sk_trained, sk_preds_dict = {}, {}
+        sk_trained["concat"], sk_preds_dict["sklearn_concat"], sk_m_fp = train_sklearn_model(X_train_fp, train_pec50, X_val_fp, val_pec50)
+        print(f"    Sklearn concat MAE: {sk_m_fp:.4f}")
+
+        print("\n  Ridge (osmordred)...")
+        X_train_osm, X_val_osm = get_raw_osmordred(train_smis, osmordred_train), get_raw_osmordred(val_smis, osmordred_train)
+
+        best_ridge_m, best_alpha, best_ridge_pr = 999, 10.0, None
+        for alpha in [1.0, 3.0, 5.0, 10.0, 20.0, 50.0, 100.0]:
+            ridge_pipe = make_pipeline(SimpleImputer(strategy='mean'), StandardScaler(), Ridge(alpha=alpha, random_state=SEED))
+            ridge_pipe.fit(X_train_osm, train_pec50)
+            pr = ridge_pipe.predict(X_val_osm)
+            if (m := mean_absolute_error(val_pec50, pr)) < best_ridge_m:
+                best_ridge_m, best_alpha, best_ridge_pr = m, alpha, pr
+        sk_preds_dict["ridge_osmordred"] = best_ridge_pr
+        print(f"    Ridge osmordred MAE: {best_ridge_m:.4f} (alpha={best_alpha})")
+        ridge_alphas_cv.append(best_alpha)
+
+        print("\n  Ensemble Weights...")
+        all_val_preds = {"chemprop_mt": mt_preds[:, 0], "chemeleon": ch_preds, **sk_preds_dict}
+        _, fold_mae = optimize_ensemble_weights(all_val_preds, val_pec50)
+        fold_maes.append(fold_mae)
+        print(f"    Fold {fold + 1} val MAE: {fold_mae:.4f}")
+
+    print(f"\n  --- 5-Fold CV Summary ---")
+    print(f"  Per-fold MAE: {[f'{m:.4f}' for m in fold_maes]}")
+    print(f"  Mean MAE: {np.mean(fold_maes):.4f} +/- {np.std(fold_maes):.4f}")
+    avg_mt_epochs = int(np.mean(mt_epochs_cv))
+    avg_ch_epochs = int(np.mean(ch_epochs_cv))
+    avg_ridge_alpha = float(np.mean(ridge_alphas_cv))
+    print(f"  Avg best epochs: Chemprop MT={avg_mt_epochs}, CheMeleon={avg_ch_epochs}")
+    print(f"  Avg Ridge alpha: {avg_ridge_alpha}")
+
+    # -------------------------------------------------------------------------
+    # Phase 2: Retrain (100% Data, averaged epochs + 10%, SWA)
     # -------------------------------------------------------------------------
     print("\n--- Phase 2: Retrain Phase (100% Data + SWA) ---")
-    
-    target_mt_epochs = max(int(mt_best_epoch * 1.1), 1)
+
+    target_mt_epochs = max(int(avg_mt_epochs * 1.1), 1)
     print(f"  Chemprop MT (Retraining blindly for {target_mt_epochs} epochs with SWA)...")
     final_mt_trainer, final_mt_model = build_and_train_pl(
-        smis, np.column_stack([y_pEC50, y_Emax]), 
+        smis, np.column_stack([y_pEC50, y_Emax]),
         model_type='chemprop', max_epochs=target_mt_epochs, n_tasks=2, mode='retrain'
     )
 
-    target_ch_epochs = max(int(ch_best_epoch * 1.1), 1)
+    target_ch_epochs = max(int(avg_ch_epochs * 1.1), 1)
     print(f"  CheMeleon Foundation (Retraining blindly for {target_ch_epochs} epochs with SWA)...")
     final_ch_trainer, final_ch_model = build_and_train_pl(
-        smis, y_pEC50, 
+        smis, y_pEC50,
         model_type='chemeleon', max_epochs=target_ch_epochs, n_tasks=1, mode='retrain'
     )
 
     sklearn_finals, X_full_fp = {}, compute_all_rdkit_features(smis)
-    for name, pipeline_orig in sk_trained.items():
+    for name in sk_trained:
         print(f"  Sklearn {name} GB (Retraining on 100% data)...")
-        xgb_orig = pipeline_orig.named_steps['xgbregressor']
+        xgb_orig = sk_trained[name].named_steps['xgbregressor']
         pipeline_new = make_pipeline(
-            SimpleImputer(strategy='mean'), 
-            StandardScaler(), 
+            SimpleImputer(strategy='mean'),
+            StandardScaler(),
             type(xgb_orig)(**xgb_orig.get_params())
         )
         pipeline_new.fit(X_full_fp, y_pEC50)
         sklearn_finals[name] = pipeline_new
 
     print("  Ridge osmordred GB (Retraining on 100% data)...")
-    ridge_final = make_pipeline(SimpleImputer(strategy='mean'), StandardScaler(), Ridge(alpha=best_alpha, random_state=SEED))
+    ridge_final = make_pipeline(SimpleImputer(strategy='mean'), StandardScaler(), Ridge(alpha=avg_ridge_alpha, random_state=SEED))
     ridge_final.fit(get_raw_osmordred(smis, osmordred_train), y_pEC50)
 
     osmordred_test = pd.read_parquet("test_phase1_osmordred_features.parquet").groupby("SMILES", as_index=False).mean(numeric_only=True)
@@ -287,7 +305,7 @@ def train_model(processed_data):
         "chemprop_mt_trainer": final_mt_trainer, "chemprop_mt_model": final_mt_model,
         "chemeleon_trainer": final_ch_trainer, "chemeleon_model": final_ch_model,
         "sklearn_finals": sklearn_finals, "ridge_final": ridge_final,
-        "osmordred_test": osmordred_test, "ensemble_weights": ensemble_weights, "ensemble_mae": ensemble_mae,
+        "osmordred_test": osmordred_test, "ensemble_weights": {}, "ensemble_mae": np.mean(fold_maes),
         "test": test,
     }
 
@@ -311,14 +329,7 @@ def evaluate_model(model, test=None):
         **sk_test_preds
     }
     
-    final_pred = np.zeros(len(test_smiles))
-    total_weight = 0
-    for name, pred in all_preds.items():
-        weight = model["ensemble_weights"].get(name, 0)
-        final_pred += weight * pred
-        total_weight += weight
-        
-    final_pred = (final_pred / total_weight) if total_weight > 0 else np.mean(list(all_preds.values()), axis=0)
+    final_pred = np.mean(list(all_preds.values()), axis=0)
     
     # Clip predictions to plausible target range
     final_pred = np.clip(final_pred, 1.5, 8.0)
