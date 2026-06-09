@@ -125,8 +125,8 @@ def build_and_train_pl(train_smis, train_ys, val_smis=None, val_ys=None, model_t
         model = models.MPNN(mp, nn.NormAggregation(), ffn, batch_norm=False, init_lr=1e-5, max_lr=1e-4, final_lr=1e-5)
         swa_lr = 1e-5
     else:
-        ffn = nn.RegressionFFN(n_tasks=n_tasks, output_transform=out_transform, input_dim=512, hidden_dim=512, n_layers=2, dropout=0.1, criterion=MAE())
-        model = models.MPNN(nn.BondMessagePassing(d_h=512, depth=7), nn.NormAggregation(), ffn, batch_norm=True, init_lr=1e-4, max_lr=5e-4, final_lr=1e-4)
+        ffn = nn.RegressionFFN(n_tasks=n_tasks, output_transform=out_transform, input_dim=256, hidden_dim=256, n_layers=2, dropout=0.1, criterion=MAE())
+        model = models.MPNN(nn.BondMessagePassing(d_h=256, depth=5), nn.NormAggregation(), ffn, batch_norm=True, init_lr=1e-4, max_lr=5e-4, final_lr=1e-4)
         swa_lr = 1e-4
 
     if mode == 'search':
@@ -194,6 +194,7 @@ def train_model(processed_data):
     os.makedirs("checkpoints/chemprop_mt", exist_ok=True)
 
     smis, y_pEC50, y_Emax = primary_clean["SMILES"].values, primary_clean["pEC50"].values, primary_clean["Emax"].values
+    prior_median = np.median(y_pEC50)
     train_idx, val_idx = train_test_split(np.arange(len(smis)), test_size=0.2, random_state=SEED, stratify=np.digitize(y_pEC50, bins=[4.0, 5.0, 6.0, 8.0]))
     train_smis, val_smis = smis[train_idx], smis[val_idx]
     train_pec50, val_pec50 = y_pEC50[train_idx], y_pEC50[val_idx]
@@ -204,11 +205,11 @@ def train_model(processed_data):
     # Phase 1: Search (Find Best Epochs and Weights on 80/20 Split)
     # -------------------------------------------------------------------------
     print("\n--- Phase 1: Search Phase (80/20 Split) ---")
-    
-    print("\n  Chemprop Multi-Task Search...")
+
+    print("\n  Chemprop Multi-Task Search (d_h=256, depth=5)...")
     mt_preds, mt_best_epoch = build_and_train_pl(
-        train_smis, np.column_stack([train_pec50, y_Emax[train_idx]]), 
-        val_smis, np.column_stack([val_pec50, y_Emax[val_idx]]), 
+        train_smis, np.column_stack([train_pec50, y_Emax[train_idx]]),
+        val_smis, np.column_stack([val_pec50, y_Emax[val_idx]]),
         'chemprop', max_epochs=80, patience=12, checkpoint_dir="chemprop_mt", n_tasks=2, mode='search'
     )
     print(f"    MAE (pEC50): {mean_absolute_error(val_pec50, mt_preds[:, 0]):.4f} | Best Epoch: {mt_best_epoch}")
@@ -219,13 +220,6 @@ def train_model(processed_data):
         'chemeleon', max_epochs=80, patience=25, checkpoint_dir="chemeleon", n_tasks=1, mode='search'
     )
     print(f"    MAE (pEC50): {mean_absolute_error(val_pec50, ch_preds):.4f} | Best Epoch: {ch_best_epoch}")
-
-    print("\n  CheMeleon Foundation v2 Search (dropout=0.3)...")
-    ch2_preds, ch2_best_epoch = build_and_train_pl(
-        train_smis, train_pec50, val_smis, val_pec50,
-        'chemeleon', max_epochs=80, patience=25, checkpoint_dir="chemeleon2", n_tasks=1, mode='search', ffn_dropout=0.3
-    )
-    print(f"    MAE (pEC50): {mean_absolute_error(val_pec50, ch2_preds):.4f} | Best Epoch: {ch2_best_epoch}")
 
     print("\n  Sklearn (fingerprints)...")
     X_train_fp, X_val_fp = compute_all_rdkit_features(train_smis), compute_all_rdkit_features(val_smis)
@@ -249,7 +243,8 @@ def train_model(processed_data):
     print(f"    Ridge osmordred MAE: {best_ridge_m:.4f} (alpha={best_alpha})")
 
     print("\n--- Optimizing Ensemble Weights ---")
-    all_val_preds = {"chemprop_mt": mt_preds[:, 0], "chemeleon": ch_preds, "chemeleon2": ch2_preds, **sk_preds_dict}
+    all_val_preds = {"chemprop_mt": mt_preds[:, 0], "chemeleon": ch_preds, **sk_preds_dict,
+                     "null": np.full(len(val_pec50), prior_median)}
     ensemble_weights, ensemble_mae = optimize_ensemble_weights(all_val_preds, val_pec50)
     print(f"  Ensemble val MAE: {ensemble_mae:.4f}\n  Weights:")
     for name, w in sorted(ensemble_weights.items(), key=lambda x: -x[1]): print(f"    {name}: {w:.4f}")
@@ -258,11 +253,11 @@ def train_model(processed_data):
     # Phase 2: Retrain (100% Data, calculated epochs + 10%, SWA)
     # -------------------------------------------------------------------------
     print("\n--- Phase 2: Retrain Phase (100% Data + SWA) ---")
-    
+
     target_mt_epochs = max(int(mt_best_epoch * 1.1), 1)
     print(f"  Chemprop MT (Retraining blindly for {target_mt_epochs} epochs with SWA)...")
     final_mt_trainer, final_mt_model = build_and_train_pl(
-        smis, np.column_stack([y_pEC50, y_Emax]), 
+        smis, np.column_stack([y_pEC50, y_Emax]),
         model_type='chemprop', max_epochs=target_mt_epochs, n_tasks=2, mode='retrain'
     )
 
@@ -271,13 +266,6 @@ def train_model(processed_data):
     final_ch_trainer, final_ch_model = build_and_train_pl(
         smis, y_pEC50,
         model_type='chemeleon', max_epochs=target_ch_epochs, n_tasks=1, mode='retrain'
-    )
-
-    target_ch2_epochs = max(int(ch2_best_epoch * 1.1), 1)
-    print(f"  CheMeleon Foundation v2 (Retraining blindly for {target_ch2_epochs} epochs with SWA)...")
-    final_ch2_trainer, final_ch2_model = build_and_train_pl(
-        smis, y_pEC50,
-        model_type='chemeleon', max_epochs=target_ch2_epochs, n_tasks=1, mode='retrain', ffn_dropout=0.3
     )
 
     sklearn_finals, X_full_fp = {}, compute_all_rdkit_features(smis)
@@ -300,10 +288,10 @@ def train_model(processed_data):
 
     return {
         "chemprop_mt_trainer": final_mt_trainer, "chemprop_mt_model": final_mt_model,
-    "chemeleon_trainer": final_ch_trainer, "chemeleon_model": final_ch_model,
-        "chemeleon2_trainer": final_ch2_trainer, "chemeleon2_model": final_ch2_model,
+        "chemeleon_trainer": final_ch_trainer, "chemeleon_model": final_ch_model,
         "sklearn_finals": sklearn_finals, "ridge_final": ridge_final,
         "osmordred_test": osmordred_test, "ensemble_weights": ensemble_weights, "ensemble_mae": ensemble_mae,
+        "prior_median": prior_median,
         "test": test,
     }
 
@@ -314,9 +302,6 @@ def evaluate_model(model, test=None):
 
     chemprop_mt_pred = predict_pl_model(model["chemprop_mt_trainer"], model["chemprop_mt_model"], test_smiles, n_tasks=2)[:, 0]
     ch_preds = predict_pl_model(model["chemeleon_trainer"], model["chemeleon_model"], test_smiles, n_tasks=1)
-    print(f"  CheMeleon: [{ch_preds.min():.2f}, {ch_preds.max():.2f}]")
-    ch2_preds = predict_pl_model(model["chemeleon2_trainer"], model["chemeleon2_model"], test_smiles, n_tasks=1)
-    print(f"  CheMeleon2: [{ch2_preds.min():.2f}, {ch2_preds.max():.2f}]")
 
     sk_test_preds, X_test_fp = {}, compute_all_rdkit_features(test_smiles)
     for name, pipeline in model["sklearn_finals"].items():
@@ -325,9 +310,9 @@ def evaluate_model(model, test=None):
     all_preds = {
         "chemprop_mt": chemprop_mt_pred,
         "chemeleon": ch_preds,
-        "chemeleon2": ch2_preds,
         "ridge_osmordred": model["ridge_final"].predict(get_raw_osmordred(test_smiles, model["osmordred_test"])),
-        **sk_test_preds
+        **sk_test_preds,
+        "null": np.full(len(test_smiles), model["prior_median"]),
     }
     
     final_pred = np.zeros(len(test_smiles))
@@ -343,6 +328,7 @@ def evaluate_model(model, test=None):
     final_pred = np.clip(final_pred, 1.5, 8.0)
 
     print(f"  Chemprop MT: [{chemprop_mt_pred.min():.2f}, {chemprop_mt_pred.max():.2f}]")
+    print(f"  CheMeleon:   [{ch_preds.min():.2f}, {ch_preds.max():.2f}]")
     for name, p in sorted(sk_test_preds.items()): print(f"  {name}:   [{p.min():.2f}, {p.max():.2f}]")
     print(f"  Ensemble:    [{final_pred.min():.2f}, {final_pred.max():.2f}]")
 
