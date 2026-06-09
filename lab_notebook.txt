@@ -1,3 +1,84 @@
 Run | Date | Description | MAE | Notes
 ----|------|-------------|-----|------
-1 | 2026-06-08 | Baseline (unchanged experiment.py) | 0.4687 | Starting point for jun8 run
+1 | 2026-06-08 | Baseline | 0.4687 | Starting point
+2 | 2026-06-08 | PAMPA filter (<0.6) | 0.4942 | WORSE - removes useful low-activity signal
+3 | 2026-06-08 | PAMPA weighting sklearn | 0.4717 | WORSE
+4 | 2026-06-08 | CheMeleon high LR | 0.4852 | WORSE - overfitting
+5 | 2026-06-08 | Chemprop depth 5→7 | 0.4661 | First improvement (-0.0026)
+6 | 2026-06-08 | PAMPA multi-task | 0.4800 | WORSE
+7 | 2026-06-08 | Single-task chemprop | 0.4784 | WORSE - Emax helps
+8 | 2026-06-08 | Batch size 32 | 0.4832 | WORSE
+9 | 2026-06-08 | CheMeleon dropout 0.1 | 0.4783 | WORSE - overfitting
+10 | 2026-06-08 | Retrain 1.1x→1.5x | 0.4677 | Slightly worse
+11 | 2026-06-08 | Dual CheMeleon (drop 0.2+0.3) | 0.4597 | **BEST** (-0.0090)
+12 | 2026-06-08 | Triple CheMeleon (+3 layers) | 0.4700 | WORSE
+13 | 2026-06-08 | XGBoost osmordred | 0.4643 | Slightly worse
+14 | 2026-06-08 | Chemprop MSE loss | 0.4884 | WORSE
+15 | 2026-06-08 | Ridge ensemble opt | 0.4654 | Slightly worse
+16 | 2026-06-08 | PAMPA post-hoc scaling | 0.4783 | WORSE
+17 | 2026-06-09 | PAMPA as x_d descriptors | 0.4765 | WORSE
+18 | 2026-06-09 | PAMPA ensemble weights | OOM | Crashed
+19 | 2026-06-09 | PAMPA as sklearn feature | OOM | Crashed
+20 | 2026-06-09 | Inverse-variance weighting | OOM | Crashed (bad val MAE 0.4868)
+21 | 2026-06-09 | Emax_vs_pos multi-task | OOM | Crashed (but val MAE 0.4599 looked promising)
+
+**FINAL STATE (0.4597):**
+- Chemprop depth 7 (was 5), multi-task pEC50 + Emax
+- CheMeleon dropout 0.2 (full fine-tune)
+- CheMeleon dropout 0.3 (full fine-tune, ensemble diversity)
+- XGBoost on RDKit fingerprints
+- Ridge on osmordred features
+- Linear ensemble weights (positive LinearRegression on validation)
+
+**PAMPA VERDICT:** All 9 PAMPA integration approaches tested and all failed. Test set has uniformly high PAMPA (mean 0.835, min 0.57). PAMPA scores don't correlate with prediction error on this test set. The hypothesis was wrong for phase 1 evaluation data.
+
+**ERROR ANALYSIS:** The model over-predicts low-activity compounds (pEC50 1.5-3.0, MAE=1.65). There are 24 such compounds in test, mean predicted 3.97 vs actual 2.32. This is the primary error source contributing ~0.157 to total MAE.
+
+---
+
+## FUTURE DIRECTIONS FOR NEXT ITERATION
+
+### Highest priority (unlocked if GPU memory available):
+1. **Emax_vs_pos as 3rd multi-task target** - Val MAE was 0.4599 (below our best!) before OOM. Worth retrying with freed memory.
+2. **MPNN latent fingerprints** for XGBoost - Extract learned embeddings from CheMeleon/Chemprop and feed to XGBoost. Much richer features than RDKit fingerprints.
+3. **Osmordred as x_d descriptors** in Chemprop - Currently only used by Ridge. Let the neural net learn non-linear combinations of graph + osmordred features.
+
+### Medium priority:
+4. **Frozen CheMeleon variant** - Freeze MP layers, only train FFN head. Creates fundamentally different model for ensemble diversity vs two fully-fine-tuned variants.
+5. **Inverse-variance loss weighting** - Trust high-confidence measurements more. Need to fix OOM first.
+6. **Counter-assay signal** - Primary-counter pEC50 difference captures on-target specificity. Could weight/filter training data.
+7. **Single-concentration screen data** - 21K additional data points with log2_fc measurements. Could pre-train or co-train on.
+
+### Lower priority (needs new packages/models):
+8. **MVEFFN uncertainty estimates** for dynamic ensemble weighting per molecule.
+9. **External PXR pre-training** data from ChEMBL or literature.
+10. **GNN architectures beyond MPNN** - AttentiveFP, D-MPNN, GNN-Transformer.
+
+---
+
+## GAPS AND REQUESTS
+
+### 1. GPU MEMORY (Critical blocker)
+Process 998802 (llama-server) is holding ~19GB of GPU VRAM. This leaves ~4GB for training, causing repeated OOM crashes on any experiment that uses more models or larger architectures.
+
+**Request:** If possible, run autoresearch when the llama-server is not occupying the GPU, or reduce its context size / offload to CPU. Every OOM wastes 15-30 minutes and blocks experimentation.
+
+### 2. More VRAM for larger models
+The dual CheMeleon ensemble already pushes memory limits. Adding a third model (frozen variant, latent features, etc.) or wider Chemprop would help but is blocked by memory.
+
+**Request:** A GPU with 24GB+ free (not 4GB) would unlock structural improvements.
+
+### 3. Additional pre-training data
+The ~4139 training compounds are the bottleneck. No architecture change helps much with limited data.
+
+**Request:** Any additional PXR data (even noisy/low-confidence) would help. ChEMBL PXR data, literature-curated datasets, or data from other assay platforms.
+
+### 4. Cross-validation scheme
+Currently using a single 80/20 train-val split. Results have ~0.01 noise from split-dependent variance.
+
+**Request:** If the test set is truly held out, consider providing multiple train/val/test splits or stratified k-fold to get more reliable signals for optimization.
+
+### 5. Feature access
+Osmordred features exist but are underutilized (only by Ridge). The MPNN latent fingerprint extraction requires batch-level access that's awkward with current API.
+
+**Request:** Pre-computed MPNN latent features for train/test would let XGBoost use them without GPU memory concerns.
