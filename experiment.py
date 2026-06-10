@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-from joblib import Parallel, delayed
+from joblib import Parallel, delayed, dump, load
 
 from xgboost import XGBRegressor
 from sklearn.linear_model import LinearRegression, Ridge
@@ -23,6 +23,7 @@ from lightning.pytorch import seed_everything
 from lightning import pytorch as pl
 
 from chemprop import data, models, nn
+from chemprop.models import load_model, save_model
 from chemprop.featurizers import CuikmolmakerMolGraphFeaturizer
 from rdkit import Chem
 from rdkit.Chem import rdFingerprintGenerator, Descriptors, MACCSkeys
@@ -178,6 +179,54 @@ def optimize_ensemble_weights(val_preds_dict, y_val):
     weights = np.abs(meta.coef_) / np.sum(np.abs(meta.coef_)) if np.sum(np.abs(meta.coef_)) > 0 else np.ones(len(names)) / len(names)
     return dict(zip(names, weights)), mean_absolute_error(y_val, meta.predict(X_scaled))
 
+def save_models(mt_trainer, mt_model, ch_trainer, ch_model, sklearn_finals, ridge_final):
+    os.makedirs("saved_models", exist_ok=True)
+    save_model("saved_models/chemprop_mt.pt", mt_model)
+    save_model("saved_models/chemeleon.pt", ch_model)
+    dump(sklearn_finals, "saved_models/sklearn_finals.joblib")
+    dump(ridge_final, "saved_models/ridge_final.joblib")
+    print("  Models saved to saved_models/")
+
+def load_models():
+    sklearn_finals = load("saved_models/sklearn_finals.joblib")
+    ridge_final = load("saved_models/ridge_final.joblib")
+    mt_model = load_model("saved_models/chemprop_mt.pt")
+    ch_model = load_model("saved_models/chemeleon.pt")
+    return mt_model, ch_model, sklearn_finals, ridge_final
+
+    mt_trainer = pl.Trainer(accelerator="auto", devices=1, logger=False, enable_progress_bar=False, enable_model_summary=False)
+    ch_trainer = pl.Trainer(accelerator="auto", devices=1, logger=False, enable_progress_bar=False, enable_model_summary=False)
+    return mt_trainer, mt_model, ch_trainer, ch_model, sklearn_finals, ridge_final
+
+def predict_from_saved(test_df, osmordred_parquet, output_csv):
+    print(f"\n--- Predicting on {len(test_df)} molecules from {output_csv} ---")
+    mt_model, ch_model, sklearn_finals, ridge_final = load_models()
+
+    test_smiles = test_df["SMILES"].values
+    trainer = pl.Trainer(accelerator="auto", devices=1, logger=False, enable_progress_bar=False, enable_model_summary=False)
+    chemprop_mt_pred = predict_pl_model(trainer, mt_model, test_smiles, n_tasks=2)[:, 0]
+    ch_preds = predict_pl_model(trainer, ch_model, test_smiles, n_tasks=1)
+
+    X_test_fp = compute_all_rdkit_features(test_smiles)
+    sk_test_preds = {}
+    for name, pipeline in sklearn_finals.items():
+        sk_test_preds[f"sklearn_{name}"] = pipeline.predict(X_test_fp)
+
+    osmordred_df = pd.read_parquet(osmordred_parquet).groupby("SMILES", as_index=False).mean(numeric_only=True)
+    all_preds = {
+        "chemprop_mt": chemprop_mt_pred,
+        "chemeleon": ch_preds,
+        "ridge_osmordred": ridge_final.predict(get_raw_osmordred(test_smiles, osmordred_df)),
+        **sk_test_preds
+    }
+
+    final_pred = np.mean(list(all_preds.values()), axis=0)
+    final_pred = np.clip(final_pred, 1.5, 8.0)
+
+    results = pd.DataFrame({"Molecule Name": test_df["Molecule Name"].values, "SMILES": test_smiles, "pEC50": final_pred})
+    results.to_csv(output_csv, index=False)
+    print(f"  Saved {output_csv}  [{final_pred.min():.2f}, {final_pred.max():.2f}]")
+
 # ============================================================================
 # MAIN PIPELINE
 # ============================================================================
@@ -202,8 +251,7 @@ def train_model(processed_data):
 
     mt_epochs_cv, ch_epochs_cv, ridge_alphas_cv = [], [], []
     fold_maes = []
-    cumulative_preds = np.zeros(len(smis))
-
+ 
     # -------------------------------------------------------------------------
     # Phase 1: 5-Fold CV Search
     # -------------------------------------------------------------------------
@@ -301,6 +349,8 @@ def train_model(processed_data):
 
     osmordred_test = pd.read_parquet("test_phase1_osmordred_features.parquet").groupby("SMILES", as_index=False).mean(numeric_only=True)
 
+    save_models(final_mt_trainer, final_mt_model, final_ch_trainer, final_ch_model, sklearn_finals, ridge_final)
+
     return {
         "chemprop_mt_trainer": final_mt_trainer, "chemprop_mt_model": final_mt_model,
         "chemeleon_trainer": final_ch_trainer, "chemeleon_model": final_ch_model,
@@ -348,7 +398,7 @@ def evaluate_model(model, test=None):
 
     results = pd.DataFrame({"Molecule Name": test["Molecule Name"].values, "SMILES": test_smiles, "Chemprop_MT": chemprop_mt_pred})
     for name, pred in sorted(sk_test_preds.items()): results[name] = pred
-    results["Ensemble"] = final_pred
+    results["pEC50"] = final_pred
     results.to_csv("predictions.csv", index=False)
     print("\n  Predictions saved to predictions.csv")
     
@@ -375,6 +425,8 @@ if __name__ == "__main__":
     try:
         raw_data = load_data()
         mae = f"{evaluate_model(train_model(preprocess_data(*raw_data))):.4f}"
+        test_df = pd.read_csv("test.csv")
+        predict_from_saved(test_df, "test_osmordred_features.parquet", "test_predictions.csv")
     except Exception as e:
         import traceback
         traceback.print_exc()

@@ -10,7 +10,7 @@ chemprop train \
     --batch-size 32 \
     --num-workers 4 \
     -o chemeleon_residual_output \
-    --target-columns Ensemble \
+    --target-columns pEC50 \
     -t regression \
     -l mae \
     --metrics mse rmse r2 mae \

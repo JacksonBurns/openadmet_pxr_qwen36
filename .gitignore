@@ -1,5 +1,6 @@
 # residual model for final submission
 chemeleon_residual_output
+saved_models
 
 # chemeleon foundation model
 chemeleon_mp.pt
