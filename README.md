@@ -56,3 +56,20 @@ The data is stored in `train.csv`. The data is sparse, and there are many other 
 
 This is a one-shot setup - you should complete the code in `experiment.py` in whatever way you think will deliver the best machine learning model. The choice of data preprocessing, data selection, use of other endpoints, model architectures, model hyperparameters, ensembling, and all other considerations are up to you. You should read the Challenge Description in @README.md to understand more about the data, as well as using your own knowledge of machine learning.
 ```
+
+## Model Development
+
+From there, Qwen was prompted various times to use the [Autoresearch](./.opencode/commands/autoresearch.md) skill.
+All experiments were logged with GitHub commits, which you can see [here](https://github.com/JacksonBurns/openadmet_pxr_qwen36/commits/main/).
+
+## Final Model
+
+The actual final model that was used is shown in [`experiment.py`](./experiment.py).
+It is an ensemble of Chemprop, CheMeleon, and Ridge regression on the Osmordred descriptor set.
+The LLM made some strange choices - it optimizes the weights of the ensemble during CV, but then does a naive average during evaluation.
+This is probably because the latter _is better_ and it just didn't bother to remove the code.
+
+To incorporate the phase 1 data, a residual model (see [`chemeleon_residual.sh`](./chemeleon_residual.sh)) was manually fit.
+One could also just add this data to the training data and re-fit, but the human in the loop noticed that, no matter what was done, the models were terrible in the low pEC50 range.
+The residual model is the most direct manner in which to address this, i.e., by directly showing the model where it is wrong.
+At least, that's the hope.
